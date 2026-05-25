@@ -6,7 +6,7 @@ use std::{env, fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use bot::AppState;
-use db::counter::CounterStore;
+use db::InstanceData;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -14,6 +14,7 @@ use tracing_subscriber::EnvFilter;
 struct Config {
     discord_token: String,
     database_path: PathBuf,
+    backup_snapshots_enabled: bool,
     dev_guild_id: Option<u64>,
 }
 
@@ -42,15 +43,13 @@ impl Config {
             bail!("DISCORD_TOKEN_FILE contains an empty Discord token");
         }
 
-        match backup_snapshots_enabled.as_deref() {
-            None | Some("false") => {}
-            Some("true") => bail!(
-                "BACKUP_SNAPSHOTS_ENABLED=true is not supported yet; snapshot generation is not implemented"
-            ),
+        let backup_snapshots_enabled = match backup_snapshots_enabled.as_deref() {
+            None | Some("false") => false,
+            Some("true") => true,
             Some(value) => {
                 bail!("BACKUP_SNAPSHOTS_ENABLED must be either true or false, received {value:?}")
             }
-        }
+        };
 
         let dev_guild_id = dev_guild_id
             .map(|value| {
@@ -63,6 +62,7 @@ impl Config {
         Ok(Self {
             discord_token,
             database_path,
+            backup_snapshots_enabled,
             dev_guild_id,
         })
     }
@@ -87,12 +87,9 @@ async fn main() -> Result<()> {
         "starting Sillybot instance"
     );
 
-    let counter_store = CounterStore::open(&config.database_path).await?;
-    let admin_log_store = counter_store.admin_log_store();
-    let state = AppState {
-        counter_store,
-        admin_log_store,
-    };
+    let instance_data =
+        InstanceData::open(&config.database_path, config.backup_snapshots_enabled).await?;
+    let state = AppState { instance_data };
 
     bot::run(config.discord_token, config.dev_guild_id, state).await
 }
@@ -119,6 +116,7 @@ mod tests {
         )?;
 
         assert_eq!(config.discord_token, "bot-token");
+        assert!(!config.backup_snapshots_enabled);
         assert_eq!(config.dev_guild_id, Some(42));
         Ok(())
     }
@@ -139,17 +137,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_enabled_snapshots_until_backup_support_is_implemented() -> Result<()> {
+    fn accepts_enabled_snapshots_for_a_protected_instance() -> Result<()> {
         let (_directory, token_file) = token_file()?;
-        let error = Config::from_values(
+        let config = Config::from_values(
             token_file,
             PathBuf::from("sillybot.db"),
             Some("true".to_owned()),
             None,
-        )
-        .unwrap_err();
+        )?;
 
-        assert!(error.to_string().contains("not supported yet"));
+        assert!(config.backup_snapshots_enabled);
         Ok(())
     }
 }

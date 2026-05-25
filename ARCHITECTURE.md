@@ -1,8 +1,8 @@
 # Sillybot Architecture
 
-Status: initial architecture proposal  
+Status: implemented baseline with current extensions
 Last researched: 2026-05-25  
-Scope: self-hosted Discord bot, initially `/ping` and `/count`
+Scope: self-hosted Discord bot with counting and installed-guild moderation commands
 
 ## Goals
 
@@ -11,7 +11,7 @@ Sillybot is a small self-hosted Discord bot written in Rust. Each self-hoster op
 1. Prove that Discord interaction handling works with `/ping`.
 2. Prove that durable database writes survive process and container restarts with `/count`.
 
-The bot's later purpose is intentionally unknown. The initial design should therefore be small, observable, easy to deploy on one server, and easy to extend without selecting infrastructure for hypothetical scale.
+The implementation now also supports moderation commands and an installed guild's optional moderation audit channel. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
 
 ## Constraints and Assumptions
 
@@ -70,7 +70,7 @@ Discord API
 | Poise / Serenity             |
 | Tokio runtime                |
 | command handlers             |
-| CounterStore                 |
+| InstanceData                 |
 | Turso embedded database      |
 +---------------+-------------+
                 |
@@ -97,13 +97,15 @@ Use Discord application commands, beginning with:
 | --- | --- | --- |
 | `/ping` | Respond with `Pong!` | None |
 | `/count` | Increment and visibly return the Sillybot instance's durable global counter in the invoking channel | Read/write Turso transaction |
+| `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
+| `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
 
 Application commands are preferable to prefix commands such as `!ping`:
 
 - Discord describes application commands as the primary user invocation model.
 - Prefix commands require receiving message content; `MESSAGE_CONTENT` is a privileged gateway intent.
 - Slash command interaction payloads already identify the user, guild, channel, and submitted options without scraping message text.
-- Initial commands are limited to Discord guild interaction contexts; do not enable bot-DM invocation for `/ping` or `/count`.
+- Application commands are limited to Discord guild interaction contexts; do not enable bot-DM invocation without a documented need.
 
 ### Serenity and Poise
 
@@ -127,13 +129,13 @@ If a future bot is almost entirely command-driven and needs scale-to-zero hostin
 
 Start with slash commands and the minimum gateway intents needed by the final Poise setup. Interaction create events do not require reading message content. In particular:
 
-- Do not enable `MESSAGE_CONTENT` for `/ping` or `/count`.
+- Do not enable `MESSAGE_CONTENT` for declared application commands.
 - Do not enable `GUILD_MEMBERS` or `GUILD_PRESENCES` until a feature needs them.
 - Add event-specific standard intents only when a feature consumes those gateway events.
 
 For an initial Sillybot instance:
 
-- Register `/ping` and `/count` as global application commands so they are available in every guild where that instance is installed.
+- Register the declared application commands globally so they are available in every guild where that instance is installed.
 - Declare their interaction contexts as guild-only; global registration does not make them available in direct messages.
 - For local development only, allow `DEV_GUILD_ID` to synchronize the declared commands to one test guild for immediate Discord propagation; absence of `DEV_GUILD_ID` selects production global synchronization.
 - Give each independently operated instance its own Discord application identity and bot token; multiple instances must not share one token while retaining separate global counters.
@@ -144,32 +146,33 @@ For an initial Sillybot instance:
 
 ### Response Timing
 
-Discord requires an initial interaction response within 3 seconds; the interaction token remains usable for follow-up work for 15 minutes. `/ping` and `/count` should complete directly within the initial response. `/count` uses a normal channel-visible response; its cross-guild aggregate value is intentionally visible wherever that instance is installed. Any future operation that can block on external APIs or long computation must defer the interaction immediately, then edit or follow up.
+Discord requires an initial interaction response within 3 seconds; the interaction token remains usable for follow-up work for 15 minutes. `/ping` and `/count` complete directly within the initial response. `/count` uses a normal channel-visible response; its cross-guild aggregate value is intentionally visible wherever that instance is installed. Moderation commands defer immediately before their Discord mutation and respond ephemerally to the moderator.
 
 ## Rust Application Architecture
 
-The repository currently contains only a new binary crate and a placeholder `main.rs`. The initial implementation should stay a single crate with modules organized by responsibility:
+The implementation remains a single crate with modules organized by responsibility:
 
 ```text
 src/
   main.rs                 startup, configuration, tracing, graceful shutdown
-  bot.rs                  Poise framework construction and startup command synchronization
+  bot.rs                  Poise framework construction and gateway lifecycle
   commands/
     mod.rs
     ping.rs
     count.rs
+    synchronization.rs    application-command declaration and pre-gateway synchronization
+    admin/                moderation commands and common action execution
   db/
-    mod.rs                database initialization and migration runner
-    counter.rs            CounterStore implementation
-    backup.rs             VACUUM INTO snapshot generation
+    mod.rs                InstanceData: migrations, persisted behavior, snapshot generation
 migrations/
   0001_counter.sql
+  0002_admin_log_channel.sql
 deploy/
   Containerfile
   compose.yaml
 ```
 
-Keep Discord handler code thin. `/count` calls a `CounterStore` method; it should not contain SQL, migration behavior, or container/path concerns. This provides a clean place to change storage drivers if Turso maturity becomes unacceptable.
+Keep Discord handler code thin. `/count` calls an `InstanceData` method; it should not contain SQL, migration behavior, or container/path concerns. `InstanceData` owns the serialized Turso implementation for the Sillybot instance's persisted behavior.
 
 ### Runtime State
 
@@ -177,13 +180,12 @@ Poise framework data should hold application state such as:
 
 ```text
 AppState
-  counter_store: CounterStore
-  backup_snapshotter: optional BackupSnapshotter when snapshots are enabled
+  instance_data: InstanceData
 ```
 
-Because this is a low-volume beta database integration, serialize counter database operations through the store initially rather than adding a pool or parallel write paths. A Tokio mutex around the active database connection is acceptable for this first workload. Reassess after Turso's concurrency limitations change or an actual feature needs parallel database access.
+Because this is a low-volume beta database integration, `InstanceData` serializes database operations rather than adding a pool or parallel write paths. A Tokio mutex around the active database connection is acceptable for this workload. Reassess after Turso's concurrency limitations change or an actual feature needs parallel database access.
 
-When scheduled snapshots are enabled, inspect migrations before applying them. For an existing database with pending migrations, create a pre-migration snapshot first; for a fresh database there is no pre-existing state to export. After creating a fresh database or applying migrations, create a post-migration snapshot before Discord command synchronization or gateway service begins. If protection is enabled for an already current database without a protected export for its current schema, create one baseline snapshot. Ordinary restarts with no schema transition or newly enabled protection create no startup export. Persist successful event-snapshot markers in the protected data directory outside the cleanup-managed exported files so startup retries do not generate duplicate exports for the same baseline or migration boundary. After startup, use a lightweight Tokio background task for daily snapshot creation. All snapshot paths call the snapshotter through the same serialized database boundary as commands. No scheduling crate is needed for the initial daily interval. Scheduled snapshot generation is disabled by default for disposable evaluation instances and must be explicitly enabled as part of an operator's backup workflow.
+When scheduled snapshots are enabled, inspect migrations before applying them. For an existing database with pending migrations, create a pre-migration snapshot first; for a fresh database there is no pre-existing state to export. After creating a fresh database or applying migrations, create a post-migration snapshot before Discord command synchronization or gateway service begins. If protection is enabled for an already current database without a protected export for its current schema, create one baseline snapshot. Ordinary restarts with no schema transition and no newly enabled protection create no startup export. Persist successful event-snapshot markers in the protected data directory outside the cleanup-managed exported files so startup retries do not generate duplicate exports for the same baseline or migration boundary. After startup, use a lightweight Tokio background task for daily snapshot creation. All snapshot paths call the snapshotter through the same serialized database boundary as commands. No scheduling crate is needed for the initial daily interval. Scheduled snapshot generation is disabled by default for disposable evaluation instances and must be explicitly enabled as part of an operator's backup workflow.
 
 ### Graceful Shutdown
 
@@ -426,7 +428,7 @@ Do not expose a health HTTP port only for appearances. For phase 1, `docker comp
 ### Deployment Smoke Test
 
 1. Deploy the container with a new protected host data directory bind-mounted at `/var/lib/sillybot`.
-2. With snapshots enabled, observe successful migration, a `sillybot-post-migration-<schema version>-<UTC timestamp>.db` snapshot, and startup synchronization of `/ping` and `/count`; then invoke `/ping` and observe `Pong!`.
+2. With snapshots enabled, observe successful migration, a `sillybot-post-migration-<schema version>-<UTC timestamp>.db` snapshot, and startup synchronization of the declared application commands; then invoke `/ping` and observe `Pong!`.
 3. Invoke `/count` twice; observe values `1` then `2`.
 4. Restart or replace the container without deleting the host data directory.
 5. Invoke `/count`; observe `3`.

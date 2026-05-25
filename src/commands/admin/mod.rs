@@ -4,6 +4,8 @@ pub mod kick;
 pub mod log_channel;
 pub mod timeout;
 
+use std::future::Future;
+
 use poise::serenity_prelude as serenity;
 use tracing::warn;
 
@@ -17,11 +19,18 @@ pub(crate) struct AuditRecord<'a> {
     pub timeout: Option<(&'a str, Option<serenity::Timestamp>)>,
 }
 
+pub(crate) struct CompletedAction {
+    pub action: &'static str,
+    pub verb: &'static str,
+    pub response: String,
+    pub timeout: Option<(String, Option<serenity::Timestamp>)>,
+}
+
 pub(crate) async fn post_audit_record(ctx: Context<'_>, record: AuditRecord<'_>) {
     let Some(guild_id) = ctx.guild_id() else {
         return;
     };
-    let channel_id = match ctx.data().admin_log_store.get(guild_id).await {
+    let channel_id = match ctx.data().instance_data.admin_log_channel(guild_id).await {
         Ok(channel_id) => channel_id,
         Err(error) => {
             warn!(%guild_id, %error, "failed to read configured admin log channel");
@@ -69,7 +78,7 @@ pub(crate) fn audit_reason(reason: String) -> String {
     reason.trim().chars().take(512).collect()
 }
 
-pub(crate) async fn reject_self_target(
+async fn reject_self_target(
     ctx: Context<'_>,
     target: &serenity::User,
 ) -> Result<bool, crate::bot::Error> {
@@ -85,7 +94,7 @@ pub(crate) async fn reject_self_target(
     Ok(true)
 }
 
-pub(crate) async fn moderation_api_error(
+async fn moderation_api_error(
     ctx: Context<'_>,
     action: &str,
     error: serenity::Error,
@@ -96,5 +105,49 @@ pub(crate) async fn moderation_api_error(
             .ephemeral(true),
     )
     .await?;
+    Ok(())
+}
+
+pub(crate) async fn execute_action<F, ActionFuture>(
+    ctx: Context<'_>,
+    target: &serenity::User,
+    reason: String,
+    completed: CompletedAction,
+    perform: F,
+) -> Result<(), crate::bot::Error>
+where
+    F: FnOnce(String) -> ActionFuture,
+    ActionFuture: Future<Output = Result<(), serenity::Error>>,
+{
+    if reject_self_target(ctx, target).await? {
+        return Ok(());
+    }
+    let reason = audit_reason(reason);
+    ctx.defer_ephemeral().await?;
+    if let Err(error) = perform(reason.clone()).await {
+        return moderation_api_error(ctx, completed.verb, error).await;
+    }
+
+    ctx.send(
+        poise::CreateReply::default()
+            .content(completed.response)
+            .ephemeral(true),
+    )
+    .await?;
+    let timeout = completed
+        .timeout
+        .as_ref()
+        .map(|(duration, expiry)| (duration.as_str(), *expiry));
+    post_audit_record(
+        ctx,
+        AuditRecord {
+            action: completed.action,
+            target,
+            moderator: ctx.author(),
+            reason: &reason,
+            timeout,
+        },
+    )
+    .await;
     Ok(())
 }

@@ -36,6 +36,14 @@ _Avoid_: guild count, user count
 A durable current value belonging to one Sillybot instance and shared by all installed guilds and users of that instance. It does not retain who incremented it or where an increment occurred.
 _Avoid_: guild counter, per-user counter
 
+**Moderation command** (`/ban`, `/kick`, `/timeout`):
+An application command through which an authorized member of an installed guild asks a Sillybot instance to apply a Discord moderation action in that guild.
+_Avoid_: admin command, bot punishment
+
+**Moderation audit channel**:
+An installed guild's optional configured Discord channel for visible records of successful moderation commands performed through its Sillybot instance.
+_Avoid_: global audit log, instance log channel
+
 ## Flagged Ambiguities
 
 **Instance**:
@@ -72,3 +80,7 @@ Domain expert: "No. One Discord bot identity belongs to one Sillybot instance an
 Developer: "Can I use `/count` in a direct message to the bot?"
 
 Domain expert: "No. Initial application commands are invoked in an installed guild."
+
+Developer: "If I configure a moderation audit channel, does it collect records from every installed guild?"
+
+Domain expert: "No. A moderation audit channel belongs to one installed guild and records successful moderation commands from that guild."

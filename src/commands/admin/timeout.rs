@@ -1,9 +1,6 @@
 use poise::serenity_prelude as serenity;
 
-use super::{
-    AuditRecord, audit_reason, duration::parse_timeout_duration, moderation_api_error,
-    post_audit_record, reject_self_target,
-};
+use super::{CompletedAction, duration::parse_timeout_duration, execute_action};
 use crate::bot::{Context, Error};
 
 /// Apply or clear a Discord communication timeout for a user.
@@ -19,9 +16,6 @@ pub async fn timeout(
     #[description = "Duration such as 10m, 2h, 1d; use clear to remove"] duration: String,
     #[description = "Reason recorded in the audit log"] reason: String,
 ) -> Result<(), Error> {
-    if reject_self_target(ctx, &user).await? {
-        return Ok(());
-    }
     let parsed_duration = match parse_timeout_duration(&duration) {
         Ok(duration) => duration,
         Err(message) => {
@@ -34,23 +28,11 @@ pub async fn timeout(
             return Ok(());
         }
     };
-    let reason = audit_reason(reason);
-    ctx.defer_ephemeral().await?;
-
     let expiry = parsed_duration
         .map(|duration| serenity::Timestamp::now().unix_timestamp() + duration.as_secs() as i64)
         .map(serenity::Timestamp::from_unix_timestamp)
         .transpose()?;
-    let mut edit = serenity::EditMember::new().audit_log_reason(&reason);
-    edit = match expiry {
-        Some(expiry) => edit.disable_communication_until_datetime(expiry),
-        None => edit.enable_communication(),
-    };
     let guild_id = ctx.guild_id().expect("guild_only command has a guild ID");
-    if let Err(error) = guild_id.edit_member(ctx.http(), user.id, edit).await {
-        return moderation_api_error(ctx, "timeout", error).await;
-    }
-
     let duration_description = expiry
         .map(|_| duration.trim().to_owned())
         .unwrap_or_else(|| "Cleared".to_owned());
@@ -62,22 +44,27 @@ pub async fn timeout(
         ),
         None => format!("Cleared the timeout for <@{}>.", user.id),
     };
-    ctx.send(
-        poise::CreateReply::default()
-            .content(response)
-            .ephemeral(true),
-    )
-    .await?;
-    post_audit_record(
+    execute_action(
         ctx,
-        AuditRecord {
+        &user,
+        reason,
+        CompletedAction {
             action: "Timeout",
-            target: &user,
-            moderator: ctx.author(),
-            reason: &reason,
-            timeout: Some((&duration_description, expiry)),
+            verb: "timeout",
+            response,
+            timeout: Some((duration_description, expiry)),
+        },
+        |reason| async move {
+            let edit = serenity::EditMember::new().audit_log_reason(&reason);
+            let edit = match expiry {
+                Some(expiry) => edit.disable_communication_until_datetime(expiry),
+                None => edit.enable_communication(),
+            };
+            guild_id
+                .edit_member(ctx.http(), user.id, edit)
+                .await
+                .map(|_| ())
         },
     )
-    .await;
-    Ok(())
+    .await
 }

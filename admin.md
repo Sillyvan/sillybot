@@ -1,6 +1,6 @@
-# Admin Features Plan
+# Moderation Commands
 
-Status: proposal
+Status: implemented
 Scope: `/ban`, `/kick`, `/timeout`, `/admin-log set` + admin-only audit channel.
 
 ## Authorization
@@ -75,16 +75,16 @@ CREATE TABLE IF NOT EXISTS guild_admin_log_channel (
 );
 ```
 
-New store `src/db/admin_log.rs` (`AdminLogStore`) with `get(guild)`, `set(guild, channel)`, `clear(guild)`. Goes through same serialized connection as `CounterStore`.
+`InstanceData` persists moderation audit-channel configuration through the same serialized Turso connection as the global counter.
 
-`AppState` gains `admin_log_store: AdminLogStore`.
+`AppState` exposes `instance_data: InstanceData`.
 
 ## Module Layout
 
 ```
 src/commands/
   admin/
-    mod.rs        register ban/kick/timeout/admin_log
+    mod.rs        execute shared moderation action policy and audit records
     ban.rs
     kick.rs
     timeout.rs
@@ -92,7 +92,7 @@ src/commands/
     duration.rs   parse "10m"/"2h"/"1d" -> chrono::Duration, capped 28d
 ```
 
-`declared_commands()` in `bot.rs` extends with the four new commands.
+`commands/synchronization.rs` declares these commands alongside `/ping` and `/count`.
 
 ## Intents
 
@@ -110,13 +110,12 @@ None added. Slash-command user args resolve via interaction payload; ban/kick/ti
 ## Tests
 
 - Duration parser: `10m`, `2h`, `1d`, rejects `>28d`, rejects garbage, `0`/`clear` => None.
-- `AdminLogStore` set/get/clear round-trip on file-backed Turso.
+- `InstanceData` moderation audit-channel set/get/clear round-trip on file-backed Turso.
 - Migration idempotency.
 - Permission attributes present on each command (analog to existing `declares_only_guild_slash_commands`).
 
-## Unresolved Questions
+## Future Considerations
 
-- Reply visibility: ephemeral to mod, or public in invoking channel? (Default proposal: ephemeral.)
 - Message-deletion-days for `/ban` — fixed `0`, optional arg, or per-guild default?
 - Embed color per action, or single neutral color?
 - Should `/admin-log` log its own setting changes to the configured channel?
