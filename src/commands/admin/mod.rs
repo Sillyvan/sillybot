@@ -12,15 +12,16 @@ use crate::bot::{Context, Error};
 
 const MAX_TIMEOUT_SECONDS: u64 = 28 * 24 * 60 * 60;
 
-struct AuditRecord<'a> {
-    action: &'a str,
-    target: &'a serenity::User,
-    moderator: &'a serenity::User,
-    reason: &'a str,
-    timeout: Option<(&'a str, Option<serenity::Timestamp>)>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuditRecord {
+    action: &'static str,
+    target_id: serenity::UserId,
+    moderator_id: serenity::UserId,
+    reason: String,
+    timeout: Option<(String, Option<serenity::Timestamp>)>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ModerationAction {
     Ban,
     Kick,
@@ -75,41 +76,9 @@ impl ModerationAction {
             },
         }
     }
-
-    async fn perform(
-        &self,
-        ctx: Context<'_>,
-        target: &serenity::User,
-        reason: &str,
-    ) -> Result<(), serenity::Error> {
-        let guild_id = ctx.guild_id().expect("guild_only command has a guild ID");
-        match self {
-            Self::Ban => {
-                guild_id
-                    .ban_with_reason(ctx.http(), target.id, 0, reason)
-                    .await
-            }
-            Self::Kick => {
-                guild_id
-                    .kick_with_reason(ctx.http(), target.id, reason)
-                    .await
-            }
-            Self::Timeout { expiry, .. } => {
-                let edit = serenity::EditMember::new().audit_log_reason(reason);
-                let edit = match expiry {
-                    Some(expiry) => edit.disable_communication_until_datetime(*expiry),
-                    None => edit.enable_communication(),
-                };
-                guild_id
-                    .edit_member(ctx.http(), target.id, edit)
-                    .await
-                    .map(|_| ())
-            }
-        }
-    }
 }
 
-async fn post_audit_record(ctx: Context<'_>, record: AuditRecord<'_>) {
+async fn post_audit_record(ctx: Context<'_>, record: AuditRecord) {
     let Some(guild_id) = ctx.guild_id() else {
         return;
     };
@@ -128,17 +97,17 @@ async fn post_audit_record(ctx: Context<'_>, record: AuditRecord<'_>) {
         .title(format!("Moderation action: {}", record.action))
         .field(
             "Target",
-            format!("<@{}> (`{}`)", record.target.id, record.target.id),
+            format!("<@{}> (`{}`)", record.target_id, record.target_id),
             false,
         )
         .field(
             "Moderator",
-            format!("<@{}> (`{}`)", record.moderator.id, record.moderator.id),
+            format!("<@{}> (`{}`)", record.moderator_id, record.moderator_id),
             false,
         )
-        .field("Reason", record.reason, false)
+        .field("Reason", &record.reason, false)
         .timestamp(serenity::Timestamp::now());
-    if let Some((duration, expiry)) = record.timeout {
+    if let Some((duration, expiry)) = &record.timeout {
         embed = embed.field("Duration", duration, true);
         if let Some(expiry) = expiry {
             embed = embed.field(
@@ -157,74 +126,119 @@ async fn post_audit_record(ctx: Context<'_>, record: AuditRecord<'_>) {
     }
 }
 
+trait ModerationBoundary {
+    async fn defer_ephemeral(&self) -> Result<(), Error>;
+
+    async fn perform(
+        &self,
+        action: &ModerationAction,
+        target_id: serenity::UserId,
+        reason: &str,
+    ) -> Result<(), String>;
+
+    async fn send_ephemeral(&self, content: String) -> Result<(), Error>;
+
+    async fn post_audit_record(&self, record: AuditRecord);
+}
+
+struct DiscordModerationBoundary<'a> {
+    ctx: Context<'a>,
+}
+
+impl ModerationBoundary for DiscordModerationBoundary<'_> {
+    async fn defer_ephemeral(&self) -> Result<(), Error> {
+        self.ctx.defer_ephemeral().await?;
+        Ok(())
+    }
+
+    async fn perform(
+        &self,
+        action: &ModerationAction,
+        target_id: serenity::UserId,
+        reason: &str,
+    ) -> Result<(), String> {
+        let guild_id = self
+            .ctx
+            .guild_id()
+            .expect("guild_only command has a guild ID");
+        let result = match action {
+            ModerationAction::Ban => {
+                guild_id
+                    .ban_with_reason(self.ctx.http(), target_id, 0, reason)
+                    .await
+            }
+            ModerationAction::Kick => {
+                guild_id
+                    .kick_with_reason(self.ctx.http(), target_id, reason)
+                    .await
+            }
+            ModerationAction::Timeout { expiry, .. } => {
+                let edit = serenity::EditMember::new().audit_log_reason(reason);
+                let edit = match expiry {
+                    Some(expiry) => edit.disable_communication_until_datetime(*expiry),
+                    None => edit.enable_communication(),
+                };
+                guild_id
+                    .edit_member(self.ctx.http(), target_id, edit)
+                    .await
+                    .map(|_| ())
+            }
+        };
+        result.map_err(|error| error.to_string())
+    }
+
+    async fn send_ephemeral(&self, content: String) -> Result<(), Error> {
+        self.ctx
+            .send(
+                poise::CreateReply::default()
+                    .content(content)
+                    .ephemeral(true),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn post_audit_record(&self, record: AuditRecord) {
+        post_audit_record(self.ctx, record).await;
+    }
+}
+
 fn audit_reason(reason: String) -> String {
     reason.trim().chars().take(512).collect()
 }
 
-async fn reject_self_target(ctx: Context<'_>, target: &serenity::User) -> Result<bool, Error> {
-    if target.id != ctx.author().id {
-        return Ok(false);
-    }
-    ctx.send(
-        poise::CreateReply::default()
-            .content("You cannot target yourself with a moderation action.")
-            .ephemeral(true),
-    )
-    .await?;
-    Ok(true)
-}
-
-async fn moderation_api_error(
-    ctx: Context<'_>,
-    action: &str,
-    error: serenity::Error,
-) -> Result<(), Error> {
-    ctx.send(
-        poise::CreateReply::default()
-            .content(format!("Failed to {action} the user: {error}"))
-            .ephemeral(true),
-    )
-    .await?;
-    Ok(())
-}
-
-async fn execute_action(
-    ctx: Context<'_>,
-    target: serenity::User,
+async fn execute_action<B: ModerationBoundary>(
+    boundary: &B,
+    moderator_id: serenity::UserId,
+    target_id: serenity::UserId,
     reason: String,
     action: ModerationAction,
 ) -> Result<(), Error> {
-    if reject_self_target(ctx, &target).await? {
+    if moderator_id == target_id {
+        boundary
+            .send_ephemeral("You cannot target yourself with a moderation action.".to_owned())
+            .await?;
         return Ok(());
     }
     let reason = audit_reason(reason);
-    let completed = action.completed_for(target.id);
-    ctx.defer_ephemeral().await?;
-    if let Err(error) = action.perform(ctx, &target, &reason).await {
-        return moderation_api_error(ctx, completed.verb, error).await;
+    let completed = action.completed_for(target_id);
+    boundary.defer_ephemeral().await?;
+    if let Err(error) = boundary.perform(&action, target_id, &reason).await {
+        boundary
+            .send_ephemeral(format!("Failed to {} the user: {error}", completed.verb))
+            .await?;
+        return Ok(());
     }
 
-    ctx.send(
-        poise::CreateReply::default()
-            .content(completed.response)
-            .ephemeral(true),
-    )
-    .await?;
-    let timeout = completed
-        .timeout
-        .as_ref()
-        .map(|(duration, expiry)| (duration.as_str(), *expiry));
-    post_audit_record(
-        ctx,
-        AuditRecord {
-            action: completed.action,
-            target: &target,
-            moderator: ctx.author(),
-            reason: &reason,
-            timeout,
-        },
-    )
-    .await;
+    let audit_record = AuditRecord {
+        action: completed.action,
+        target_id,
+        moderator_id,
+        reason,
+        timeout: completed.timeout,
+    };
+    boundary.send_ephemeral(completed.response).await?;
+    boundary.post_audit_record(audit_record).await;
     Ok(())
 }
 
@@ -233,7 +247,14 @@ async fn execute_ban(
     target: serenity::User,
     reason: String,
 ) -> Result<(), Error> {
-    execute_action(ctx, target, reason, ModerationAction::Ban).await
+    execute_action(
+        &DiscordModerationBoundary { ctx },
+        ctx.author().id,
+        target.id,
+        reason,
+        ModerationAction::Ban,
+    )
+    .await
 }
 
 async fn execute_kick(
@@ -241,7 +262,14 @@ async fn execute_kick(
     target: serenity::User,
     reason: String,
 ) -> Result<(), Error> {
-    execute_action(ctx, target, reason, ModerationAction::Kick).await
+    execute_action(
+        &DiscordModerationBoundary { ctx },
+        ctx.author().id,
+        target.id,
+        reason,
+        ModerationAction::Kick,
+    )
+    .await
 }
 
 async fn execute_timeout(
@@ -275,8 +303,9 @@ async fn execute_timeout(
         }
     };
     execute_action(
-        ctx,
-        target,
+        &DiscordModerationBoundary { ctx },
+        ctx.author().id,
+        target.id,
         reason,
         ModerationAction::Timeout { duration, expiry },
     )
@@ -315,7 +344,143 @@ fn parse_timeout_input(input: &str) -> Result<TimeoutInput, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum DiscordEvent {
+        Deferred,
+        Performed(ModerationAction, serenity::UserId, String),
+        Replied(String),
+        Audited(AuditRecord),
+    }
+
+    #[derive(Default)]
+    struct FakeDiscord {
+        events: RefCell<Vec<DiscordEvent>>,
+        action_failure: Option<String>,
+    }
+
+    impl ModerationBoundary for FakeDiscord {
+        async fn defer_ephemeral(&self) -> Result<(), Error> {
+            self.events.borrow_mut().push(DiscordEvent::Deferred);
+            Ok(())
+        }
+
+        async fn perform(
+            &self,
+            action: &ModerationAction,
+            target_id: serenity::UserId,
+            reason: &str,
+        ) -> Result<(), String> {
+            self.events.borrow_mut().push(DiscordEvent::Performed(
+                action.clone(),
+                target_id,
+                reason.to_owned(),
+            ));
+            match &self.action_failure {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
+        }
+
+        async fn send_ephemeral(&self, content: String) -> Result<(), Error> {
+            self.events
+                .borrow_mut()
+                .push(DiscordEvent::Replied(content));
+            Ok(())
+        }
+
+        async fn post_audit_record(&self, record: AuditRecord) {
+            self.events.borrow_mut().push(DiscordEvent::Audited(record));
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_moderation_action_replies_and_records_audit_facts() -> Result<(), Error> {
+        let discord = FakeDiscord::default();
+        let moderator_id = serenity::UserId::new(7);
+        let target_id = serenity::UserId::new(42);
+
+        execute_action(
+            &discord,
+            moderator_id,
+            target_id,
+            " reason ".to_owned(),
+            ModerationAction::Ban,
+        )
+        .await?;
+
+        assert_eq!(
+            discord.events.into_inner(),
+            vec![
+                DiscordEvent::Deferred,
+                DiscordEvent::Performed(ModerationAction::Ban, target_id, "reason".to_owned()),
+                DiscordEvent::Replied("Banned <@42>.".to_owned()),
+                DiscordEvent::Audited(AuditRecord {
+                    action: "Ban",
+                    target_id,
+                    moderator_id,
+                    reason: "reason".to_owned(),
+                    timeout: None,
+                }),
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn self_target_is_rejected_without_calling_discord_moderation() -> Result<(), Error> {
+        let discord = FakeDiscord::default();
+        let member_id = serenity::UserId::new(42);
+
+        execute_action(
+            &discord,
+            member_id,
+            member_id,
+            "reason".to_owned(),
+            ModerationAction::Kick,
+        )
+        .await?;
+
+        assert_eq!(
+            discord.events.into_inner(),
+            vec![DiscordEvent::Replied(
+                "You cannot target yourself with a moderation action.".to_owned()
+            )]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejected_moderation_action_reports_failure_without_an_audit_record()
+    -> Result<(), Error> {
+        let discord = FakeDiscord {
+            action_failure: Some("missing permissions".to_owned()),
+            ..Default::default()
+        };
+        let target_id = serenity::UserId::new(42);
+
+        execute_action(
+            &discord,
+            serenity::UserId::new(7),
+            target_id,
+            "reason".to_owned(),
+            ModerationAction::Ban,
+        )
+        .await?;
+
+        assert_eq!(
+            discord.events.into_inner(),
+            vec![
+                DiscordEvent::Deferred,
+                DiscordEvent::Performed(ModerationAction::Ban, target_id, "reason".to_owned()),
+                DiscordEvent::Replied("Failed to ban the user: missing permissions".to_owned()),
+            ]
+        );
+        Ok(())
+    }
 
     #[test]
     fn parses_supported_timeout_inputs() {

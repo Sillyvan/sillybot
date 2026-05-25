@@ -15,3 +15,5 @@ This is a single-context repository. See `docs/agents/domain.md`.
 ### Command modules
 
 Keep command declarations thin: forward submitted inputs to the owning module, which keeps mutation, response content, audit facts, validation, and tests together.
+
+Use TDD when practical: add behavioral tests through public interfaces before changing behavior.

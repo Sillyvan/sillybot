@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
@@ -18,47 +18,72 @@ fn gateway_intents() -> serenity::GatewayIntents {
     serenity::GatewayIntents::empty()
 }
 
+async fn after_successful_synchronization<
+    T,
+    E,
+    Synchronize,
+    SynchronizeFuture,
+    Gateway,
+    GatewayFuture,
+>(
+    synchronize: Synchronize,
+    gateway: Gateway,
+) -> std::result::Result<T, E>
+where
+    Synchronize: FnOnce() -> SynchronizeFuture,
+    SynchronizeFuture: Future<Output = std::result::Result<(), E>>,
+    Gateway: FnOnce() -> GatewayFuture,
+    GatewayFuture: Future<Output = std::result::Result<T, E>>,
+{
+    synchronize().await?;
+    gateway().await
+}
+
 pub async fn run(token: String, dev_guild_id: Option<u64>, state: AppState) -> Result<()> {
-    let setup_state = state.clone();
-    let framework = poise::Framework::builder()
-        .options(poise::FrameworkOptions {
-            commands: commands::synchronization::declared_commands(),
-            initialize_owners: false,
-            event_handler: |_, event, _, _| {
-                Box::pin(async move {
-                    if let serenity::FullEvent::Ready { data_about_bot, .. } = event {
-                        info!(user = %data_about_bot.user.name, "Discord gateway ready");
-                    }
-                    Ok(())
-                })
-            },
-            on_error: |error| {
-                Box::pin(async move {
-                    error!(error = %error, "Discord command or framework error");
-                    if let Err(response_error) = poise::builtins::on_error(error).await {
-                        error!(
-                            error = %response_error,
-                            "failed to send Discord command error response"
-                        );
-                    }
-                })
-            },
-            ..Default::default()
-        })
-        .setup(move |_, _, _| {
-            let state = setup_state.clone();
-            Box::pin(async move { Ok(state) })
-        })
-        .build();
-
     let http = serenity::Http::new(&token);
-    commands::synchronization::synchronize(&http, framework.options(), dev_guild_id).await?;
+    let commands_to_register = commands::synchronization::declared_commands();
+    let setup_state = state.clone();
+    let mut client = after_successful_synchronization(
+        || commands::synchronization::synchronize(&http, &commands_to_register, dev_guild_id),
+        || async move {
+            let framework = poise::Framework::builder()
+                .options(poise::FrameworkOptions {
+                    commands: commands::synchronization::declared_commands(),
+                    initialize_owners: false,
+                    event_handler: |_, event, _, _| {
+                        Box::pin(async move {
+                            if let serenity::FullEvent::Ready { data_about_bot, .. } = event {
+                                info!(user = %data_about_bot.user.name, "Discord gateway ready");
+                            }
+                            Ok(())
+                        })
+                    },
+                    on_error: |error| {
+                        Box::pin(async move {
+                            error!(error = %error, "Discord command or framework error");
+                            if let Err(response_error) = poise::builtins::on_error(error).await {
+                                error!(
+                                    error = %response_error,
+                                    "failed to send Discord command error response"
+                                );
+                            }
+                        })
+                    },
+                    ..Default::default()
+                })
+                .setup(move |_, _, _| {
+                    let state = setup_state.clone();
+                    Box::pin(async move { Ok(state) })
+                })
+                .build();
 
-    let intents = gateway_intents();
-    let mut client = serenity::ClientBuilder::new(&token, intents)
-        .framework(framework)
-        .await
-        .context("failed to create Discord gateway client")?;
+            serenity::ClientBuilder::new(&token, gateway_intents())
+                .framework(framework)
+                .await
+                .context("failed to create Discord gateway client")
+        },
+    )
+    .await?;
     let shard_manager = Arc::clone(&client.shard_manager);
 
     let client_task = client.start();
@@ -100,10 +125,45 @@ async fn shutdown_signal() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, future::ready};
+
     use super::*;
 
     #[test]
     fn application_commands_require_no_gateway_intents() {
         assert_eq!(gateway_intents(), serenity::GatewayIntents::empty());
+    }
+
+    #[tokio::test]
+    async fn gateway_setup_runs_only_after_command_synchronization_succeeds() {
+        let events = RefCell::new(Vec::new());
+        after_successful_synchronization(
+            || {
+                events.borrow_mut().push("synchronization");
+                ready(Ok::<(), &str>(()))
+            },
+            || {
+                events.borrow_mut().push("gateway");
+                ready(Ok::<(), &str>(()))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(events.into_inner(), vec!["synchronization", "gateway"]);
+
+        let events = RefCell::new(Vec::new());
+        let result = after_successful_synchronization(
+            || {
+                events.borrow_mut().push("synchronization");
+                ready(Err::<(), &str>("registration rejected"))
+            },
+            || {
+                events.borrow_mut().push("gateway");
+                ready(Ok::<(), &str>(()))
+            },
+        )
+        .await;
+        assert_eq!(result, Err("registration rejected"));
+        assert_eq!(events.into_inner(), vec!["synchronization"]);
     }
 }

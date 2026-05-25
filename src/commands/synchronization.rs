@@ -35,12 +35,13 @@ impl From<Option<u64>> for RegistrationScope {
 
 pub(crate) async fn synchronize(
     http: &serenity::Http,
-    options: &poise::FrameworkOptions<AppState, Error>,
+    commands: &[poise::Command<AppState, Error>],
     dev_guild_id: Option<u64>,
 ) -> Result<()> {
     let scope = dev_guild_id.into();
-    retry_synchronization(
-        || async {
+    register_in_scope(
+        scope,
+        |scope| async move {
             let application = http
                 .get_current_application_info()
                 .await
@@ -48,10 +49,10 @@ pub(crate) async fn synchronize(
             http.set_application_id(application.id);
             match scope {
                 RegistrationScope::DevelopmentGuild(guild_id) => {
-                    poise::builtins::register_in_guild(http, &options.commands, guild_id).await
+                    poise::builtins::register_in_guild(http, commands, guild_id).await
                 }
                 RegistrationScope::Global => {
-                    poise::builtins::register_globally(http, &options.commands).await
+                    poise::builtins::register_globally(http, commands).await
                 }
             }
             .map_err(classify_synchronization_error)
@@ -71,6 +72,21 @@ pub(crate) async fn synchronize(
         RegistrationScope::Global => info!("synchronized global application commands"),
     }
     Ok(())
+}
+
+async fn register_in_scope<E, Registration, RegistrationFuture, Sleeper, SleepFuture>(
+    scope: RegistrationScope,
+    mut registration: Registration,
+    sleeper: Sleeper,
+) -> std::result::Result<(), E>
+where
+    E: std::fmt::Display,
+    Registration: FnMut(RegistrationScope) -> RegistrationFuture,
+    RegistrationFuture: Future<Output = std::result::Result<(), SynchronizationFailure<E>>>,
+    Sleeper: FnMut(Duration) -> SleepFuture,
+    SleepFuture: Future<Output = ()>,
+{
+    retry_synchronization(|| registration(scope), sleeper).await
 }
 
 #[derive(Debug)]
@@ -246,5 +262,29 @@ mod tests {
 
         assert_eq!(result, Err("invalid credentials"));
         assert_eq!(*attempts.borrow(), 1);
+    }
+
+    #[tokio::test]
+    async fn registration_calls_the_selected_discord_scope() {
+        for (scope, expected) in [
+            (RegistrationScope::Global, RegistrationScope::Global),
+            (
+                RegistrationScope::DevelopmentGuild(serenity::GuildId::new(42)),
+                RegistrationScope::DevelopmentGuild(serenity::GuildId::new(42)),
+            ),
+        ] {
+            let registrations = RefCell::new(Vec::new());
+            register_in_scope(
+                scope,
+                |registered_scope| {
+                    registrations.borrow_mut().push(registered_scope);
+                    std::future::ready(Ok::<(), SynchronizationFailure<&str>>(()))
+                },
+                |_delay| std::future::ready(()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(registrations.into_inner(), vec![expected]);
+        }
     }
 }

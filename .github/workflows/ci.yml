@@ -1,0 +1,42 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Check formatting with the pinned Rust image
+        run: >-
+          docker run --rm
+          --volume "$PWD:/work"
+          --workdir /work
+          rust:1.95-bookworm
+          cargo fmt --check
+
+  turso-platform-tests:
+    name: Turso behavior (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Run tests inside the target-platform image
+        run: docker build --target test --file deploy/Containerfile .

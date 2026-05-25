@@ -158,10 +158,14 @@ impl InstanceData {
     }
 
     pub async fn run_daily_snapshots(&self) -> Result<()> {
+        self.run_snapshots_every(DAILY_SNAPSHOT_INTERVAL).await
+    }
+
+    async fn run_snapshots_every(&self, interval_duration: Duration) -> Result<()> {
         let Some(policy) = &self.snapshots else {
             return pending().await;
         };
-        let mut interval = time::interval(DAILY_SNAPSHOT_INTERVAL);
+        let mut interval = time::interval(interval_duration);
         interval.tick().await;
         loop {
             interval.tick().await;
@@ -547,6 +551,63 @@ mod tests {
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
         assert!(names[0].contains("baseline-2"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restores_persisted_behavior_from_a_protected_snapshot() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("sillybot.db");
+        let data = InstanceData::open(&path, false).await?;
+        let guild = serenity::GuildId::new(42);
+        assert_eq!(data.increment_counter().await?, 1);
+        data.set_admin_log_channel(guild, serenity::ChannelId::new(100))
+            .await?;
+        drop(data);
+
+        InstanceData::open(&path, true).await?;
+        let names = snapshot_names(directory.path())?;
+        let restored_path = directory.path().join("snapshots").join(&names[0]);
+        let restored = InstanceData::open(&restored_path, false).await?;
+
+        assert_eq!(restored.increment_counter().await?, 2);
+        assert_eq!(
+            restored.admin_log_channel(guild).await?,
+            Some(serenity::ChannelId::new(100))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scheduled_snapshots_capture_current_persisted_behavior() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("sillybot.db");
+        let data = InstanceData::open(&path, true).await?;
+        assert_eq!(data.increment_counter().await?, 1);
+
+        let scheduled_data = data.clone();
+        let scheduled = tokio::spawn(async move {
+            let _ = scheduled_data
+                .run_snapshots_every(Duration::from_millis(10))
+                .await;
+        });
+        let daily_path = time::timeout(Duration::from_secs(1), async {
+            loop {
+                let names = snapshot_names(directory.path())?;
+                if let Some(name) = names.into_iter().find(|name| name.contains("daily")) {
+                    return Ok::<PathBuf, anyhow::Error>(
+                        directory.path().join("snapshots").join(name),
+                    );
+                }
+                time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for a scheduled snapshot")??;
+        scheduled.abort();
+
+        let restored = InstanceData::open(&daily_path, false).await?;
+        assert_eq!(restored.increment_counter().await?, 2);
         Ok(())
     }
 
