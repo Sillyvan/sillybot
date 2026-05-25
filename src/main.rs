@@ -88,7 +88,11 @@ async fn main() -> Result<()> {
     );
 
     let counter_store = CounterStore::open(&config.database_path).await?;
-    let state = AppState { counter_store };
+    let admin_log_store = counter_store.admin_log_store();
+    let state = AppState {
+        counter_store,
+        admin_log_store,
+    };
 
     bot::run(config.discord_token, config.dev_guild_id, state).await
 }

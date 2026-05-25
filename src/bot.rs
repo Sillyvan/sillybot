@@ -5,7 +5,10 @@ use poise::serenity_prelude as serenity;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-use crate::{commands, db::counter::CounterStore};
+use crate::{
+    commands,
+    db::{admin_log::AdminLogStore, counter::CounterStore},
+};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, AppState, Error>;
@@ -13,10 +16,18 @@ pub type Context<'a> = poise::Context<'a, AppState, Error>;
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub counter_store: CounterStore,
+    pub admin_log_store: AdminLogStore,
 }
 
 fn declared_commands() -> Vec<poise::Command<AppState, Error>> {
-    vec![commands::ping::ping(), commands::count::count()]
+    vec![
+        commands::ping::ping(),
+        commands::count::count(),
+        commands::admin::ban::ban(),
+        commands::admin::kick::kick(),
+        commands::admin::timeout::timeout(),
+        commands::admin::log_channel::admin_log(),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +66,12 @@ pub async fn run(token: String, dev_guild_id: Option<u64>, state: AppState) -> R
             on_error: |error| {
                 Box::pin(async move {
                     error!(error = %error, "Discord command or framework error");
+                    if let Err(response_error) = poise::builtins::on_error(error).await {
+                        error!(
+                            error = %response_error,
+                            "failed to send Discord command error response"
+                        );
+                    }
                 })
             },
             ..Default::default()
@@ -227,7 +244,7 @@ mod tests {
                 .iter()
                 .map(|command| command.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ping", "count"]
+            vec!["ping", "count", "ban", "kick", "timeout", "admin-log"]
         );
         assert!(
             commands
@@ -235,6 +252,46 @@ mod tests {
                 .all(|command| command.slash_action.is_some())
         );
         assert!(commands.iter().all(|command| command.guild_only));
+        assert_eq!(
+            commands[2].default_member_permissions,
+            serenity::Permissions::BAN_MEMBERS
+        );
+        assert_eq!(
+            commands[2].required_bot_permissions,
+            serenity::Permissions::BAN_MEMBERS
+        );
+        assert_eq!(
+            commands[3].default_member_permissions,
+            serenity::Permissions::KICK_MEMBERS
+        );
+        assert_eq!(
+            commands[3].required_bot_permissions,
+            serenity::Permissions::KICK_MEMBERS
+        );
+        assert_eq!(
+            commands[4].default_member_permissions,
+            serenity::Permissions::MODERATE_MEMBERS
+        );
+        assert_eq!(
+            commands[4].required_bot_permissions,
+            serenity::Permissions::MODERATE_MEMBERS
+        );
+        assert_eq!(
+            commands[5].default_member_permissions,
+            serenity::Permissions::MANAGE_GUILD
+        );
+        assert_eq!(
+            commands[5].required_bot_permissions,
+            serenity::Permissions::MANAGE_GUILD
+        );
+        assert_eq!(
+            commands[5]
+                .subcommands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["set", "clear", "show"]
+        );
     }
 
     #[test]

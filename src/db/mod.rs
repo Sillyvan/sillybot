@@ -1,3 +1,4 @@
+pub mod admin_log;
 pub mod counter;
 
 use anyhow::{Context, Result, bail};
@@ -5,7 +6,8 @@ use tracing::info;
 use turso::{Connection, Value, transaction::TransactionBehavior};
 
 const MIGRATION_1: &str = include_str!("../../migrations/0001_counter.sql");
-const LATEST_SCHEMA_VERSION: i64 = 1;
+const MIGRATION_2: &str = include_str!("../../migrations/0002_admin_log_channel.sql");
+const LATEST_SCHEMA_VERSION: i64 = 2;
 
 pub(crate) async fn initialize(conn: &mut Connection) -> Result<()> {
     conn.execute(
@@ -37,6 +39,23 @@ pub(crate) async fn initialize(conn: &mut Connection) -> Result<()> {
             .await
             .context("failed to commit migration 0001_counter")?;
         info!(version = 1, "applied database migration");
+    }
+    if applied < 2 {
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
+        let tx = conn
+            .transaction()
+            .await
+            .context("failed to begin database migration transaction")?;
+        tx.execute(MIGRATION_2, ())
+            .await
+            .context("failed to apply migration 0002_admin_log_channel")?;
+        tx.execute("INSERT INTO schema_migrations (version) VALUES (2);", ())
+            .await
+            .context("failed to record migration 0002_admin_log_channel")?;
+        tx.commit()
+            .await
+            .context("failed to commit migration 0002_admin_log_channel")?;
+        info!(version = 2, "applied database migration");
     } else {
         info!(version = applied, "database schema is current");
     }

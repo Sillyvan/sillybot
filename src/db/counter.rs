@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::Mutex;
 use turso::{Builder, Connection, Value, transaction::TransactionBehavior};
 
+use super::admin_log::AdminLogStore;
 use super::initialize;
 
 #[derive(Clone, Debug)]
@@ -67,6 +68,10 @@ impl CounterStore {
             .await
             .context("failed to commit counter transaction")?;
         Ok(value)
+    }
+
+    pub fn admin_log_store(&self) -> AdminLogStore {
+        AdminLogStore::new(Arc::clone(&self.conn))
     }
 }
 
@@ -142,7 +147,7 @@ mod tests {
 
         let database = Builder::new_local(path.to_str().unwrap()).build().await?;
         let conn = database.connect()?;
-        conn.execute("INSERT INTO schema_migrations (version) VALUES (2);", ())
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (3);", ())
             .await?;
         drop(conn);
         drop(database);
