@@ -84,15 +84,16 @@ CREATE TABLE IF NOT EXISTS guild_admin_log_channel (
 ```
 src/commands/
   admin/
-    mod.rs        execute shared moderation action policy and audit records
-    ban.rs
-    kick.rs
-    timeout.rs
+    mod.rs        execute moderation actions, timeout meaning, and audit records
+    ban.rs        declare `/ban` and forward submitted inputs
+    kick.rs       declare `/kick` and forward submitted inputs
+    timeout.rs    declare `/timeout` and forward submitted inputs
     log_channel.rs
-    duration.rs   parse "10m"/"2h"/"1d" -> chrono::Duration, capped 28d
 ```
 
 `commands/synchronization.rs` declares these commands alongside `/ping` and `/count`.
+The moderation command module owns the Discord mutation, moderator response, and
+moderation audit record facts so those outcomes cannot diverge across commands.
 
 ## Intents
 
@@ -109,7 +110,9 @@ None added. Slash-command user args resolve via interaction payload; ban/kick/ti
 
 ## Tests
 
-- Duration parser: `10m`, `2h`, `1d`, rejects `>28d`, rejects garbage, `0`/`clear` => None.
+- Moderation command module: timeout input `10m`, `2h`, `1d`, rejects `>28d`,
+  rejects garbage, `0`/`clear` => clearing behavior; action facts stay aligned
+  with moderator responses and moderation audit records.
 - `InstanceData` moderation audit-channel set/get/clear round-trip on file-backed Turso.
 - Migration idempotency.
 - Permission attributes present on each command (analog to existing `declares_only_guild_slash_commands`).

@@ -11,3 +11,7 @@ Use the default five canonical triage labels. See `docs/agents/triage-labels.md`
 ### Domain docs
 
 This is a single-context repository. See `docs/agents/domain.md`.
+
+### Command modules
+
+Keep command declarations thin: forward submitted inputs to the owning module, which keeps mutation, response content, audit facts, validation, and tests together.

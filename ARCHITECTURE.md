@@ -161,7 +161,7 @@ src/
     ping.rs
     count.rs
     synchronization.rs    application-command declaration and pre-gateway synchronization
-    admin/                moderation commands and common action execution
+    admin/                moderation command declarations and one shared implementation
   db/
     mod.rs                InstanceData: migrations, persisted behavior, snapshot generation
 migrations/
