@@ -1,0 +1,21 @@
+FROM rust:1.95-bookworm AS builder
+WORKDIR /build
+
+COPY Cargo.toml Cargo.lock ./
+COPY migrations ./migrations
+COPY src ./src
+RUN cargo build --release --locked
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system sillybot \
+    && useradd --system --gid sillybot --home-dir /var/lib/sillybot sillybot \
+    && install -d -o sillybot -g sillybot /var/lib/sillybot
+
+COPY --from=builder /build/target/release/sillybot /usr/local/bin/sillybot
+
+USER sillybot:sillybot
+VOLUME ["/var/lib/sillybot"]
+ENTRYPOINT ["/usr/local/bin/sillybot"]

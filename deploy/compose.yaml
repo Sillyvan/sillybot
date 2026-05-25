@@ -1,0 +1,24 @@
+services:
+  sillybot:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      DATABASE_PATH: /var/lib/sillybot/sillybot.db
+      DEV_GUILD_ID: ${DEV_GUILD_ID:?set DEV_GUILD_ID in deploy/.env for local command synchronization}
+      BACKUP_SNAPSHOTS_ENABLED: "false"
+      RUST_LOG: ${RUST_LOG:-sillybot=info,serenity=warn}
+    secrets:
+      - discord_token
+    volumes:
+      - sillybot-data:/var/lib/sillybot
+
+secrets:
+  discord_token:
+    file: ./secrets/discord_token
+
+volumes:
+  sillybot-data:
