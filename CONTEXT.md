@@ -1,44 +1,74 @@
 # Sillybot
 
-Sillybot is a private Discord bot installed in explicitly approved Discord guilds. Its initial user-facing purpose is to prove interaction handling and durable shared counting.
+Sillybot is a self-hosted Discord bot. Each instance operator chooses which Discord guilds may use their Sillybot instance; its initial user-facing purpose is to prove interaction handling and durable shared counting.
 
 ## Language
 
 **Sillybot**:
-The Discord bot application provided to approved guilds.
-_Avoid_: public bot
+The Discord bot software distributed for self-hosting.
+_Avoid_: centrally hosted bot, public bot
 
-**Approved guild**:
-A Discord guild explicitly permitted to install and use Sillybot. Sillybot may be installed in more than one approved guild.
-_Avoid_: home server, single server
+**Sillybot instance**:
+A separately operated installation of Sillybot with one Discord application identity and its own global counter. One instance may be used in more than one installed guild.
+_Avoid_: shared Sillybot service
+
+**Instance operator**:
+The person or group that operates a Sillybot instance and decides which Discord guilds may use it.
+_Avoid_: Sillybot administrator
+
+**Installed guild**:
+A Discord guild in which an instance operator has made their Sillybot instance available.
+_Avoid_: approved guild, home server, single server
 
 **Application command**:
-A slash command exposed by Sillybot to users in an approved guild.
+A slash command exposed by a Sillybot instance to users in an installed guild. Initial application commands are not available through direct messages.
 _Avoid_: text command, prefix command
 
 **Ping command** (`/ping`):
-An application command that confirms Sillybot can receive and respond to an interaction.
+An application command that confirms a Sillybot instance can receive and respond to an interaction.
 _Avoid_: health check
 
 **Count command** (`/count`):
-An application command that increments and returns the global counter.
+An application command that increments its Sillybot instance's global counter and returns the new value visibly in the invoking channel.
 _Avoid_: guild count, user count
 
 **Global counter**:
-A durable count shared by all approved guilds and users of Sillybot. Each count command increments the same value.
+A durable current value belonging to one Sillybot instance and shared by all installed guilds and users of that instance. It does not retain who incremented it or where an increment occurred.
 _Avoid_: guild counter, per-user counter
 
 ## Flagged Ambiguities
+
+**Instance**:
+Use **Sillybot instance** for one operator-controlled installation. Use **Sillybot** for the distributed software.
+
+**Bot identity**:
+One Discord application identity belongs to one **Sillybot instance**. Do not use one bot identity for independently operated instances.
 
 **Server**:
 Use **guild** for a Discord installation boundary. Use **host** for the machine running Sillybot, when that concept is needed.
 
 ## Example Dialogue
 
-Developer: "Should `/count` show how often this guild used Sillybot?"
+Developer: "Should `/count` show how often this guild used this instance?"
 
-Domain expert: "No. The count command increments the global counter, so invocations from every approved guild contribute to the same value."
+Domain expert: "No. The count command increments that Sillybot instance's global counter, so invocations from every installed guild contribute to the same value."
 
-Developer: "Can an unapproved guild invoke an application command?"
+Developer: "Can a guild see that this instance has been counted in another guild?"
 
-Domain expert: "No. Sillybot is available only in approved guilds."
+Domain expert: "Yes. `/count` visibly returns the instance-wide global counter value in the channel where it is invoked."
+
+Developer: "Can the operator look up who performed earlier increments?"
+
+Domain expert: "No. The global counter records its current value, not an invocation history."
+
+Developer: "Does the Sillybot project decide which guilds may use an instance?"
+
+Domain expert: "No. Each instance operator chooses where their Sillybot instance is made available."
+
+Developer: "Can two separately stored counters run under the same Discord bot identity?"
+
+Domain expert: "No. One Discord bot identity belongs to one Sillybot instance and one global counter."
+
+Developer: "Can I use `/count` in a direct message to the bot?"
+
+Domain expert: "No. Initial application commands are invoked in an installed guild."
