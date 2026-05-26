@@ -1,15 +1,27 @@
-FROM rust:1.95-bookworm AS source
+FROM lukemathwalker/cargo-chef:0.1.77-rust-1.95-bookworm AS chef
 WORKDIR /build
 
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY build.rs ./
 COPY migrations ./migrations
 COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
 
-FROM source AS builder
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY migrations ./migrations
+COPY src ./src
 RUN cargo build --release --locked
 
-FROM source AS test
+FROM chef AS test
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --locked --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY migrations ./migrations
+COPY src ./src
 RUN cargo test --locked --all-targets
 
 FROM debian:bookworm-slim AS runtime

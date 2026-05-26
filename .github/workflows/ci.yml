@@ -46,11 +46,22 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
+            platform-pair: amd64
             runner: ubuntu-24.04
           - platform: linux/arm64
+            platform-pair: arm64
             runner: ubuntu-24.04-arm
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Run tests inside the target-platform image
-        run: docker build --target test --file deploy/Containerfile .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Containerfile
+          target: test
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=test-${{ matrix.platform-pair }}
+          cache-to: type=gha,mode=max,scope=test-${{ matrix.platform-pair }}
