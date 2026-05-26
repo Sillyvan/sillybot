@@ -16,6 +16,7 @@ pub(crate) fn declared_commands() -> Vec<poise::Command<AppState, Error>> {
         super::admin::kick::kick(),
         super::admin::timeout::timeout(),
         super::admin::log_channel::admin_log(),
+        super::patch_notes::patch_notes(),
     ]
 }
 
@@ -176,7 +177,8 @@ mod tests {
                 "ban",
                 "kick",
                 "timeout",
-                "admin-log"
+                "admin-log",
+                "patch-notes"
             ]
         );
         assert!(
@@ -200,6 +202,10 @@ mod tests {
             permissions["admin-log"],
             serenity::Permissions::MANAGE_GUILD
         );
+        assert_eq!(
+            permissions["patch-notes"],
+            serenity::Permissions::MANAGE_GUILD
+        );
 
         let admin_log = commands
             .iter()
@@ -207,6 +213,18 @@ mod tests {
             .unwrap();
         assert_eq!(
             admin_log
+                .subcommands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["set", "clear", "show"]
+        );
+        let patch_notes = commands
+            .iter()
+            .find(|command| command.name == "patch-notes")
+            .unwrap();
+        assert_eq!(
+            patch_notes
                 .subcommands
                 .iter()
                 .map(|command| command.name.as_str())

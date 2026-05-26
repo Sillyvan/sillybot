@@ -14,7 +14,8 @@ use turso::{Builder, Connection, Value, transaction::TransactionBehavior};
 
 const MIGRATION_1: &str = include_str!("../../migrations/0001_counter.sql");
 const MIGRATION_2: &str = include_str!("../../migrations/0002_admin_log_channel.sql");
-const LATEST_SCHEMA_VERSION: i64 = 2;
+const MIGRATION_3: &str = include_str!("../../migrations/0003_patch_notes_channel.sql");
+const LATEST_SCHEMA_VERSION: i64 = 3;
 const DAILY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug)]
@@ -27,6 +28,13 @@ pub struct InstanceData {
 struct SnapshotPolicy {
     snapshots_dir: PathBuf,
     markers_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatchNotesSubscription {
+    pub guild_id: serenity::GuildId,
+    pub channel_id: serenity::ChannelId,
+    pub last_article_url: Option<String>,
 }
 
 impl InstanceData {
@@ -154,6 +162,120 @@ impl InstanceData {
         )
         .await
         .context("failed to clear admin log channel")?;
+        Ok(())
+    }
+
+    pub async fn patch_notes_channel(
+        &self,
+        guild_id: serenity::GuildId,
+    ) -> Result<Option<serenity::ChannelId>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT channel_id FROM guild_patch_notes_channel WHERE guild_id = ?1;",
+                (snowflake_to_integer(guild_id.get())?,),
+            )
+            .await
+            .context("failed to query patch notes channel")?;
+        let Some(row) = rows
+            .next()
+            .await
+            .context("failed to retrieve patch notes channel")?
+        else {
+            return Ok(None);
+        };
+        match row
+            .get_value(0)
+            .context("failed to decode patch notes channel")?
+        {
+            Value::Integer(channel_id) => Ok(Some(serenity::ChannelId::new(
+                u64::try_from(channel_id).context("patch notes channel ID is negative")?,
+            ))),
+            value => bail!("unexpected patch notes channel value: {value:?}"),
+        }
+    }
+
+    pub async fn set_patch_notes_channel(
+        &self,
+        guild_id: serenity::GuildId,
+        channel_id: serenity::ChannelId,
+    ) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO guild_patch_notes_channel (guild_id, channel_id) VALUES (?1, ?2)
+             ON CONFLICT (guild_id) DO UPDATE SET channel_id = excluded.channel_id;",
+            (
+                snowflake_to_integer(guild_id.get())?,
+                snowflake_to_integer(channel_id.get())?,
+            ),
+        )
+        .await
+        .context("failed to set patch notes channel")?;
+        Ok(())
+    }
+
+    pub async fn clear_patch_notes_channel(&self, guild_id: serenity::GuildId) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM guild_patch_notes_channel WHERE guild_id = ?1;",
+            (snowflake_to_integer(guild_id.get())?,),
+        )
+        .await
+        .context("failed to clear patch notes channel")?;
+        Ok(())
+    }
+
+    pub async fn patch_notes_subscriptions(&self) -> Result<Vec<PatchNotesSubscription>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT guild_id, channel_id, last_article_url FROM guild_patch_notes_channel;",
+                (),
+            )
+            .await
+            .context("failed to query patch notes subscriptions")?;
+        let mut subscriptions = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .context("failed to retrieve patch notes subscription")?
+        {
+            let Value::Integer(guild_id) = row.get_value(0)? else {
+                bail!("unexpected patch notes guild ID value");
+            };
+            let Value::Integer(channel_id) = row.get_value(1)? else {
+                bail!("unexpected patch notes channel ID value");
+            };
+            let last_article_url = match row.get_value(2)? {
+                Value::Text(value) => Some(value),
+                Value::Null => None,
+                value => bail!("unexpected patch notes article URL value: {value:?}"),
+            };
+            subscriptions.push(PatchNotesSubscription {
+                guild_id: serenity::GuildId::new(
+                    u64::try_from(guild_id).context("patch notes guild ID is negative")?,
+                ),
+                channel_id: serenity::ChannelId::new(
+                    u64::try_from(channel_id).context("patch notes channel ID is negative")?,
+                ),
+                last_article_url,
+            });
+        }
+        Ok(subscriptions)
+    }
+
+    pub async fn mark_patch_notes_article_seen(
+        &self,
+        guild_id: serenity::GuildId,
+        article_url: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE guild_patch_notes_channel SET last_article_url = ?2 WHERE guild_id = ?1;",
+            (snowflake_to_integer(guild_id.get())?, article_url),
+        )
+        .await
+        .context("failed to record delivered patch notes article")?;
         Ok(())
     }
 
@@ -339,6 +461,7 @@ async fn apply_migrations(conn: &mut Connection, applied: i64) -> Result<bool> {
     for (version, sql, name) in [
         (1, MIGRATION_1, "0001_counter"),
         (2, MIGRATION_2, "0002_admin_log_channel"),
+        (3, MIGRATION_3, "0003_patch_notes_channel"),
     ] {
         if applied >= version {
             continue;
@@ -530,6 +653,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stores_installed_guild_patch_notes_channels_and_delivery_markers() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let data = InstanceData::open(&directory.path().join("sillybot.db"), false).await?;
+        let guild = serenity::GuildId::new(42);
+
+        assert_eq!(data.patch_notes_channel(guild).await?, None);
+        data.set_patch_notes_channel(guild, serenity::ChannelId::new(100))
+            .await?;
+        assert_eq!(
+            data.patch_notes_subscriptions().await?,
+            vec![PatchNotesSubscription {
+                guild_id: guild,
+                channel_id: serenity::ChannelId::new(100),
+                last_article_url: None,
+            }]
+        );
+        data.mark_patch_notes_article_seen(guild, "/patch-26-10")
+            .await?;
+        data.set_patch_notes_channel(guild, serenity::ChannelId::new(101))
+            .await?;
+        assert_eq!(
+            data.patch_notes_subscriptions().await?[0]
+                .last_article_url
+                .as_deref(),
+            Some("/patch-26-10")
+        );
+        data.clear_patch_notes_channel(guild).await?;
+        assert_eq!(data.patch_notes_channel(guild).await?, None);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn creates_one_post_migration_snapshot_for_fresh_protected_data() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("sillybot.db");
@@ -537,7 +692,7 @@ mod tests {
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("post-migration-2"));
+        assert!(names[0].contains("post-migration-3"));
         Ok(())
     }
 
@@ -550,7 +705,7 @@ mod tests {
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("baseline-2"));
+        assert!(names[0].contains("baseline-3"));
         Ok(())
     }
 
@@ -618,13 +773,13 @@ mod tests {
         InstanceData::open(&path, false).await?;
         let markers = directory.path().join(".snapshot-events");
         std::fs::create_dir_all(&markers)?;
-        std::fs::write(markers.join("post-migration-2.pending"), b"pending")?;
+        std::fs::write(markers.join("post-migration-3.pending"), b"pending")?;
 
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("post-migration-2"));
-        assert!(!markers.join("post-migration-2.pending").exists());
+        assert!(names[0].contains("post-migration-3"));
+        assert!(!markers.join("post-migration-3.pending").exists());
         Ok(())
     }
 
@@ -640,9 +795,9 @@ mod tests {
         assert!(
             names
                 .iter()
-                .any(|name| name.contains("pre-migration-1-to-2"))
+                .any(|name| name.contains("pre-migration-1-to-3"))
         );
-        assert!(names.iter().any(|name| name.contains("post-migration-2")));
+        assert!(names.iter().any(|name| name.contains("post-migration-3")));
         Ok(())
     }
 
@@ -668,7 +823,7 @@ mod tests {
         InstanceData::open(&path, false).await?;
         let database = Builder::new_local(path.to_str().unwrap()).build().await?;
         let conn = database.connect()?;
-        conn.execute("INSERT INTO schema_migrations (version) VALUES (3);", ())
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (4);", ())
             .await?;
         drop(conn);
 

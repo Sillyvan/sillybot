@@ -2,7 +2,7 @@
 
 Status: implemented baseline with current extensions
 Last researched: 2026-05-25  
-Scope: self-hosted Discord bot with counting and installed-guild moderation commands
+Scope: self-hosted Discord bot with counting, moderation, and League patch-notes publication
 
 ## Goals
 
@@ -11,7 +11,7 @@ Sillybot is a small self-hosted Discord bot written in Rust. Each self-hoster op
 1. Prove that Discord interaction handling works with `/ping`.
 2. Prove that durable database writes survive process and container restarts with `/count`.
 
-The implementation now also supports moderation commands and an installed guild's optional moderation audit channel. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
+The implementation now also supports moderation commands, an installed guild's optional moderation audit channel, and per-guild publication of official League of Legends patch notes. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
 
 ## Constraints and Assumptions
 
@@ -100,6 +100,7 @@ Use Discord application commands, beginning with:
 | `/info` | Display the Sillybot version, runtime OS/architecture, and initial interaction response latency without exposing the host name | None |
 | `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
 | `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
+| `/patch-notes set`, `/patch-notes clear`, `/patch-notes show` | Configure or inspect an installed guild's League of Legends patch notes channel | Read/write Turso transaction |
 
 Application commands are preferable to prefix commands such as `!ping`:
 
@@ -163,12 +164,14 @@ src/
     count.rs
     info.rs
     synchronization.rs    application-command declaration and pre-gateway synchronization
+    patch_notes.rs         channel configuration and Riot patch-notes publication worker
     admin/                moderation command declarations and one shared implementation
   db/
     mod.rs                InstanceData: migrations, persisted behavior, snapshot generation
 migrations/
   0001_counter.sql
   0002_admin_log_channel.sql
+  0003_patch_notes_channel.sql
 deploy/
   Containerfile
   compose.yaml
@@ -187,6 +190,8 @@ AppState
 
 Because this is a low-volume beta database integration, `InstanceData` serializes database operations rather than adding a pool or parallel write paths. A Tokio mutex around the active database connection is acceptable for this workload. Reassess after Turso's concurrency limitations change or an actual feature needs parallel database access.
 
+The patch-notes publication worker polls Riot's public official patch-notes page hourly and reads its embedded structured page data. Its per-guild persisted cursor posts the latest current note on initial enablement without replaying history and advances only after a successful Discord post.
+
 When scheduled snapshots are enabled, inspect migrations before applying them. For an existing database with pending migrations, create a pre-migration snapshot first; for a fresh database there is no pre-existing state to export. After creating a fresh database or applying migrations, create a post-migration snapshot before Discord command synchronization or gateway service begins. If protection is enabled for an already current database without a protected export for its current schema, create one baseline snapshot. Ordinary restarts with no schema transition and no newly enabled protection create no startup export. Persist successful event-snapshot markers in the protected data directory outside the cleanup-managed exported files so startup retries do not generate duplicate exports for the same baseline or migration boundary. After startup, use a lightweight Tokio background task for daily snapshot creation. All snapshot paths call the snapshotter through the same serialized database boundary as commands. No scheduling crate is needed for the initial daily interval. Scheduled snapshot generation is disabled by default for disposable evaluation instances and must be explicitly enabled as part of an operator's backup workflow.
 
 ### Graceful Shutdown
@@ -202,6 +207,8 @@ Versions below reflect compatible released lines verified during initial researc
 | Crate | Version line | Use |
 | --- | --- | --- |
 | `poise` | `0.6.2` | Slash command framework built on Serenity; brings compatible Serenity support. |
+| `reqwest` | `0.12` | Fetch the official public League of Legends patch-notes page. |
+| `serde_json` | `1` | Decode the page's embedded structured article listing. |
 | `serenity` | `0.12.5` through Poise, or direct only when needed | Discord gateway and HTTP API types/client. Keep versions compatible with Poise. |
 | `tokio` | `1` with `macros`, `rt-multi-thread`, `signal`, `sync`, `time` | Async entry point, runtime, shutdown, serialized database access, daily snapshot interval. |
 | `turso` | `0.6.1` | Embedded local database opened from the mounted data path. |

@@ -90,9 +90,13 @@ pub async fn run(token: String, dev_guild_id: Option<u64>, state: AppState) -> R
     tokio::pin!(client_task);
     let daily_snapshots = state.instance_data.run_daily_snapshots();
     tokio::pin!(daily_snapshots);
+    let patch_notes_updates =
+        commands::patch_notes::run_updates(&http, state.instance_data.clone());
+    tokio::pin!(patch_notes_updates);
     tokio::select! {
         result = &mut client_task => result.context("Discord gateway client stopped with an error")?,
         result = &mut daily_snapshots => result?,
+        result = &mut patch_notes_updates => result?,
         result = shutdown_signal() => {
             result?;
             info!("shutdown signal received; stopping Discord gateway");

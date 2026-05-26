@@ -48,6 +48,14 @@ _Avoid_: admin command, bot punishment
 An installed guild's optional configured Discord channel for visible records of successful moderation commands performed through its Sillybot instance.
 _Avoid_: global audit log, instance log channel
 
+**Patch notes command** (`/patch-notes set`, `/patch-notes clear`, `/patch-notes show`):
+An application command through which an authorized member configures an installed guild's optional League of Legends patch notes channel.
+_Avoid_: patch subscription message, Riot API command
+
+**League of Legends patch notes channel**:
+An installed guild's optional configured Discord channel where a Sillybot instance posts links to newly published official League of Legends patch notes.
+_Avoid_: global patch channel, patch archive
+
 ## Flagged Ambiguities
 
 **Instance**:
