@@ -97,7 +97,7 @@ Use Discord application commands, beginning with:
 | --- | --- | --- |
 | `/ping` | Respond with `Pong!` | None |
 | `/count` | Increment and visibly return the Sillybot instance's durable global counter in the invoking channel | Read/write Turso transaction |
-| `/info` | Display the Sillybot version, runtime OS/architecture, and initial interaction response latency without exposing the host name | None |
+| `/info` | Display the Sillybot version, runtime OS/architecture, process and host-wide CPU/memory usage, and initial interaction response latency without exposing the host name | None |
 | `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
 | `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
 | `/patch-notes set`, `/patch-notes clear`, `/patch-notes show` | Configure or inspect an installed guild's League of Legends patch notes channel | Read/write Turso transaction |
