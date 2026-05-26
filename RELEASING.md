@@ -43,5 +43,10 @@ Deploy an immutable version tag or digest. No moving `latest` image is
 published. GitHub Releases pages are optional; GHCR holds the runnable
 release artifact.
 
+If an existing tag needs publication, run the `Release Container Image`
+workflow manually in GitHub Actions and provide its tag, for example
+`v0.1.1`. This is useful for the first release if the tag and workflow were
+pushed together.
+
 The workflow becomes usable once this clone is pushed to its intended GitHub
 repository and the repository/package permissions permit GHCR publication.
