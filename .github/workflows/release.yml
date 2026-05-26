@@ -60,8 +60,8 @@ jobs:
           file: deploy/Containerfile
           target: test
           platforms: ${{ matrix.platform }}
+          # Main CI exports this cache; tag-scoped exports cannot warm later tags.
           cache-from: type=gha,scope=test-${{ matrix.platform-pair }}
-          cache-to: type=gha,mode=max,scope=test-${{ matrix.platform-pair }}
 
   publish-platform:
     name: Publish GHCR image (${{ matrix.platform }})
@@ -111,8 +111,9 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.metadata.outputs.labels }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=release-${{ matrix.platform-pair }}
-          cache-to: type=gha,mode=max,scope=release-${{ matrix.platform-pair }}
+          # Registry cache is shared across release tags; GHA cache entries are ref-scoped.
+          cache-from: type=registry,ref=${{ steps.image.outputs.name }}:buildcache-${{ matrix.platform-pair }}
+          cache-to: type=registry,ref=${{ steps.image.outputs.name }}:buildcache-${{ matrix.platform-pair }},mode=max
       - name: Export image digest
         run: |
           mkdir -p /tmp/digests
