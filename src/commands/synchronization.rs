@@ -11,6 +11,7 @@ pub(crate) fn declared_commands() -> Vec<poise::Command<AppState, Error>> {
     vec![
         super::ping::ping(),
         super::count::count(),
+        super::info::info(),
         super::admin::ban::ban(),
         super::admin::kick::kick(),
         super::admin::timeout::timeout(),
@@ -168,7 +169,15 @@ mod tests {
                 .iter()
                 .map(|command| command.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ping", "count", "ban", "kick", "timeout", "admin-log"]
+            vec![
+                "ping",
+                "count",
+                "info",
+                "ban",
+                "kick",
+                "timeout",
+                "admin-log"
+            ]
         );
         assert!(
             commands

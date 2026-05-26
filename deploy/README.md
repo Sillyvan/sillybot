@@ -17,7 +17,8 @@ guild for immediate Discord propagation; unset it for global registration.
    docker compose --env-file deploy/.env -f deploy/compose.yaml up --build
    ```
 
-Invoke `/ping` and `/count` in the installed guild. Recreate the container and
-invoke `/count` again to confirm that the named volume preserves the counter.
+Invoke `/ping`, `/info`, and `/count` in the installed guild. Recreate the
+container and invoke `/count` again to confirm that the named volume preserves
+the counter.
 Snapshots and off-host backups are disabled in this setup; enable them via
 the systemd deployment.

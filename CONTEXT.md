@@ -32,6 +32,10 @@ _Avoid_: health check
 An application command that increments its Sillybot instance's global counter and returns the new value visibly in the invoking channel.
 _Avoid_: guild count, user count
 
+**Info command** (`/info`):
+An application command that displays a Sillybot instance's software version, runtime platform, and interaction response latency. It does not disclose the host's name.
+_Avoid_: host inspection command
+
 **Global counter**:
 A durable current value belonging to one Sillybot instance and shared by all installed guilds and users of that instance. It does not retain who incremented it or where an increment occurred.
 _Avoid_: guild counter, per-user counter

@@ -97,6 +97,7 @@ Use Discord application commands, beginning with:
 | --- | --- | --- |
 | `/ping` | Respond with `Pong!` | None |
 | `/count` | Increment and visibly return the Sillybot instance's durable global counter in the invoking channel | Read/write Turso transaction |
+| `/info` | Display the Sillybot version, runtime OS/architecture, and initial interaction response latency without exposing the host name | None |
 | `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
 | `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
 
@@ -146,7 +147,7 @@ For an initial Sillybot instance:
 
 ### Response Timing
 
-Discord requires an initial interaction response within 3 seconds; the interaction token remains usable for follow-up work for 15 minutes. `/ping` and `/count` complete directly within the initial response. `/count` uses a normal channel-visible response; its cross-guild aggregate value is intentionally visible wherever that instance is installed. Moderation commands defer immediately before their Discord mutation and respond ephemerally to the moderator.
+Discord requires an initial interaction response within 3 seconds; the interaction token remains usable for follow-up work for 15 minutes. `/ping` and `/count` complete directly within the initial response. `/info` first responds immediately and edits that response with elapsed initial response latency. `/count` uses a normal channel-visible response; its cross-guild aggregate value is intentionally visible wherever that instance is installed. Moderation commands defer immediately before their Discord mutation and respond ephemerally to the moderator.
 
 ## Rust Application Architecture
 
@@ -160,6 +161,7 @@ src/
     mod.rs
     ping.rs
     count.rs
+    info.rs
     synchronization.rs    application-command declaration and pre-gateway synchronization
     admin/                moderation command declarations and one shared implementation
   db/
@@ -464,7 +466,7 @@ This tests the two critical integration boundaries: Discord interactions and emb
 - Use Turso Database; do not design a fallback database into this architecture.
 - Require instance operators to explicitly enable online Turso backup snapshots with `VACUUM INTO`, including pre-migration snapshots for existing databases with pending migrations, post-migration snapshots only for initialization or applied migration, a baseline on first protection of already-current data, and daily snapshots, and store tested encrypted off-host copies in Cloudflare R2 before relying on persisted data; do not enforce external backup-service readiness at bot startup.
 - Do not scope application commands to a single Discord guild or require a runtime guild allowlist initially; synchronize production commands globally on startup and leave installation control to each instance operator.
-- Restrict initial `/ping` and `/count` command interaction contexts to guilds; do not enable bot-DM invocation.
+- Restrict `/ping`, `/count`, and `/info` command interaction contexts to guilds; do not enable bot-DM invocation.
 - Require one Discord application identity and bot token per Sillybot instance; sharing one bot identity across independent data directories is unsupported.
 - Maintain Docker Compose as the initial reference deployment with a host data bind mount and file-mounted Discord token secret; the OCI image remains usable through other runtimes without maintained deployment recipes.
 - Retry transient Discord command-synchronization failures internally before gateway service begins; fail immediately for invalid credentials or rejected command definitions.

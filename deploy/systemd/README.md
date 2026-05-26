@@ -41,6 +41,9 @@ systemctl --user daemon-reload
 systemctl --user start sillybot.service
 ```
 
+Create and publish version tags using [`../../RELEASING.md`](../../RELEASING.md);
+set `Image=` to the resulting immutable `vX.Y.Z` GHCR tag or digest.
+
 `systemctl --user enable` is not needed: quadlets with `WantedBy=default.target`
 plus `enable-linger` already start at boot.
 
