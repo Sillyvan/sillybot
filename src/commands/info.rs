@@ -8,20 +8,26 @@ use sysinfo::{
     ProcessesToUpdate, System, get_current_pid,
 };
 
+use poise::serenity_prelude as serenity;
+
 use crate::bot::{Context, Error};
+
+const INFO_COLOUR: u32 = 0x5865F2;
 
 /// Display this Sillybot instance's release and runtime information.
 #[poise::command(slash_command, guild_only)]
 pub async fn info(ctx: Context<'_>) -> Result<(), Error> {
     let started = Instant::now();
     let mut resources = RuntimeResources::start()?;
-    let response = ctx.say("Measuring command latency...").await?;
+    let response = ctx
+        .send(poise::CreateReply::default().embed(loading_embed()))
+        .await?;
     let latency = started.elapsed();
     let resources = resources.measure(&ctx.data().database_path).await?;
     response
         .edit(
             ctx,
-            poise::CreateReply::default().content(info_message(
+            poise::CreateReply::default().embed(info_embed(
                 env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
@@ -136,13 +142,20 @@ fn absolute_path(path: &Path) -> Result<PathBuf, Error> {
     }
 }
 
-fn info_message(
+fn loading_embed() -> serenity::CreateEmbed {
+    serenity::CreateEmbed::new()
+        .title("ℹ️ Sillybot Instance Info")
+        .description("⏱️ Measuring status and response latency...")
+        .colour(INFO_COLOUR)
+}
+
+fn info_embed(
     version: &str,
     operating_system: &str,
     architecture: &str,
     latency: Duration,
     resources: ResourceUsage,
-) -> String {
+) -> serenity::CreateEmbed {
     let ResourceUsage {
         process_cpu_percent,
         process_memory_mib,
@@ -152,10 +165,40 @@ fn info_message(
         storage_used_gib,
         storage_total_gib,
     } = resources;
-    format!(
-        "Sillybot v{version}\nRuntime: {operating_system}/{architecture}\nSillybot process: CPU {process_cpu_percent:.2}%, RAM {process_memory_mib:.2} MiB\nSystem: CPU {system_cpu_percent:.2}%, RAM {system_used_memory_mib:.2} / {system_total_memory_mib:.2} MiB, Storage {storage_used_gib:.2} / {storage_total_gib:.2} GiB\nCommand latency: {} ms",
-        latency.as_millis()
-    )
+    serenity::CreateEmbed::new()
+        .title("ℹ️ Sillybot Instance Info")
+        .description("Status details for this Sillybot instance.")
+        .colour(INFO_COLOUR)
+        .field(
+            "📦 Release",
+            format!("**Version** `v{version}`\n**Runtime** `{operating_system}/{architecture}`"),
+            false,
+        )
+        .field(
+            "🤖 Sillybot process",
+            format!("**CPU** `{process_cpu_percent:.2}%`\n**Memory** `{process_memory_mib:.2} MiB`"),
+            true,
+        )
+        .field(
+            "🖥️ Host system",
+            format!(
+                "**CPU** `{system_cpu_percent:.2}%`\n**Memory** `{system_used_memory_mib:.2} / {system_total_memory_mib:.2} MiB`"
+            ),
+            true,
+        )
+        .field(
+            "💾 Storage",
+            format!("`{storage_used_gib:.2} / {storage_total_gib:.2} GiB` used"),
+            true,
+        )
+        .field(
+            "⚡ Response latency",
+            format!("`{} ms`", latency.as_millis()),
+            true,
+        )
+        .footer(serenity::CreateEmbedFooter::new(
+            "No host name or data path is exposed",
+        ))
 }
 
 #[cfg(test)]
@@ -163,9 +206,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn displays_process_and_system_resource_usage() {
+    fn displays_process_and_system_resource_usage_in_a_rich_status_card() {
         assert_eq!(
-            info_message(
+            serde_json::to_value(info_embed(
                 "1.2.3",
                 "linux",
                 "x86_64",
@@ -179,8 +222,44 @@ mod tests {
                     storage_used_gib: 5.0,
                     storage_total_gib: 15.0,
                 },
-            ),
-            "Sillybot v1.2.3\nRuntime: linux/x86_64\nSillybot process: CPU 4.25%, RAM 48.75 MiB\nSystem: CPU 32.50%, RAM 4096.00 / 8192.00 MiB, Storage 5.00 / 15.00 GiB\nCommand latency: 17 ms"
+            ))
+            .expect("embed serializes"),
+            serde_json::json!({
+                "title": "ℹ️ Sillybot Instance Info",
+                "type": "rich",
+                "description": "Status details for this Sillybot instance.",
+                "color": 0x5865F2,
+                "fields": [
+                    {
+                        "name": "📦 Release",
+                        "value": "**Version** `v1.2.3`\n**Runtime** `linux/x86_64`",
+                        "inline": false
+                    },
+                    {
+                        "name": "🤖 Sillybot process",
+                        "value": "**CPU** `4.25%`\n**Memory** `48.75 MiB`",
+                        "inline": true
+                    },
+                    {
+                        "name": "🖥️ Host system",
+                        "value": "**CPU** `32.50%`\n**Memory** `4096.00 / 8192.00 MiB`",
+                        "inline": true
+                    },
+                    {
+                        "name": "💾 Storage",
+                        "value": "`5.00 / 15.00 GiB` used",
+                        "inline": true
+                    },
+                    {
+                        "name": "⚡ Response latency",
+                        "value": "`17 ms`",
+                        "inline": true
+                    }
+                ],
+                "footer": {
+                    "text": "No host name or data path is exposed"
+                }
+            })
         );
     }
 }
