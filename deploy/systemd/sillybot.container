@@ -8,25 +8,23 @@ After=network-online.target
 Image=ghcr.io/OWNER/sillybot:VERSION
 ContainerName=sillybot
 
-# Token file pre-loaded with: podman secret create discord_token /etc/sillybot/discord_token
+# Token file pre-loaded into this rootless user's Podman secret storage.
 Secret=discord_token,target=/run/secrets/discord_token
 
-# Protected host data directory bind-mounted into the container.
-# Create with: install -d -o <svc-uid> -g <svc-gid> -m 0750 /srv/sillybot/data
-Volume=/srv/sillybot/data:/var/lib/sillybot:Z
+# Protected host data directory bind-mounted into the container. Z labels it
+# for SELinux; U maps ownership for the image's non-root sillybot user.
+Volume=/srv/sillybot/data:/var/lib/sillybot:Z,U
 
 Environment=DISCORD_TOKEN_FILE=/run/secrets/discord_token
 Environment=DATABASE_PATH=/var/lib/sillybot/sillybot.db
-Environment=BACKUP_SNAPSHOTS_ENABLED=true
+# Set true only once completed snapshots are exported and restore-tested off-host.
+Environment=BACKUP_SNAPSHOTS_ENABLED=false
 Environment=RUST_LOG=sillybot=info,serenity=warn
 # Uncomment to fast-sync slash commands to one guild instead of globally.
 # Environment=DEV_GUILD_ID=123456789012345678
 
 # Match compose stop_grace_period so SIGTERM has time to close the Gateway.
 StopTimeout=30
-
-# Pull a newer digest when `podman auto-update` runs (set up the timer separately).
-AutoUpdate=registry
 
 [Service]
 Restart=on-failure

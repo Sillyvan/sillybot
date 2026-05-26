@@ -22,7 +22,7 @@ jobs:
           --volume "$PWD:/work"
           --workdir /work
           rust:1.95-bookworm
-          cargo fmt --check
+          sh -c 'rustup component add rustfmt && cargo fmt --check'
 
   turso-platform-tests:
     name: Turso behavior (${{ matrix.platform }})
