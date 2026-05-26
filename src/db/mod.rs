@@ -15,7 +15,9 @@ use turso::{Builder, Connection, Value, transaction::TransactionBehavior};
 const MIGRATION_1: &str = include_str!("../../migrations/0001_counter.sql");
 const MIGRATION_2: &str = include_str!("../../migrations/0002_admin_log_channel.sql");
 const MIGRATION_3: &str = include_str!("../../migrations/0003_patch_notes_channel.sql");
-const LATEST_SCHEMA_VERSION: i64 = 3;
+const MIGRATION_4: &str = include_str!("../../migrations/0004_self_role_menus.sql");
+const MIGRATION_5: &str = include_str!("../../migrations/0005_self_role_options.sql");
+const LATEST_SCHEMA_VERSION: i64 = 5;
 const DAILY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug)]
@@ -35,6 +37,23 @@ pub struct PatchNotesSubscription {
     pub guild_id: serenity::GuildId,
     pub channel_id: serenity::ChannelId,
     pub last_article_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelfRoleMenu {
+    pub guild_id: serenity::GuildId,
+    pub channel_id: serenity::ChannelId,
+    pub message_id: Option<serenity::MessageId>,
+    pub title: String,
+    pub options: Vec<SelfRoleOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelfRoleOption {
+    pub role_id: serenity::RoleId,
+    pub label: String,
+    pub emoji: String,
+    pub description: String,
 }
 
 impl InstanceData {
@@ -279,6 +298,199 @@ impl InstanceData {
         Ok(())
     }
 
+    pub async fn create_self_role_menu(
+        &self,
+        guild_id: serenity::GuildId,
+        channel_id: serenity::ChannelId,
+        title: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO guild_self_role_menu (guild_id, channel_id, title) VALUES (?1, ?2, ?3)
+             ON CONFLICT (guild_id) DO UPDATE SET
+                 channel_id = excluded.channel_id,
+                 title = excluded.title;",
+            (
+                snowflake_to_integer(guild_id.get())?,
+                snowflake_to_integer(channel_id.get())?,
+                title,
+            ),
+        )
+        .await
+        .context("failed to create self-role menu")?;
+        Ok(())
+    }
+
+    pub async fn add_self_role_option(
+        &self,
+        guild_id: serenity::GuildId,
+        role_id: serenity::RoleId,
+        label: &str,
+        emoji: &str,
+        description: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO guild_self_role_option
+                (guild_id, role_id, label, emoji, description, display_order)
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                COALESCE((SELECT MAX(display_order) + 1 FROM guild_self_role_option WHERE guild_id = ?1), 0))
+             ON CONFLICT (guild_id, role_id) DO UPDATE SET
+                label = excluded.label, emoji = excluded.emoji, description = excluded.description;",
+            (
+                snowflake_to_integer(guild_id.get())?,
+                snowflake_to_integer(role_id.get())?,
+                label,
+                emoji,
+                description,
+            ),
+        )
+        .await
+        .context("failed to add self-role option")?;
+        Ok(())
+    }
+
+    pub async fn remove_self_role_option(
+        &self,
+        guild_id: serenity::GuildId,
+        role_id: serenity::RoleId,
+    ) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM guild_self_role_option WHERE guild_id = ?1 AND role_id = ?2;",
+            (
+                snowflake_to_integer(guild_id.get())?,
+                snowflake_to_integer(role_id.get())?,
+            ),
+        )
+        .await
+        .context("failed to remove self-role option")?;
+        Ok(())
+    }
+
+    pub async fn set_self_role_message(
+        &self,
+        guild_id: serenity::GuildId,
+        message_id: serenity::MessageId,
+    ) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE guild_self_role_menu SET message_id = ?2 WHERE guild_id = ?1;",
+            (
+                snowflake_to_integer(guild_id.get())?,
+                snowflake_to_integer(message_id.get())?,
+            ),
+        )
+        .await
+        .context("failed to store self-role menu message")?;
+        Ok(())
+    }
+
+    pub async fn self_role_menu(
+        &self,
+        guild_id: serenity::GuildId,
+    ) -> Result<Option<SelfRoleMenu>> {
+        let conn = self.conn.lock().await;
+        let guild_value = snowflake_to_integer(guild_id.get())?;
+        let mut rows = conn
+            .query(
+                "SELECT channel_id, message_id, title FROM guild_self_role_menu WHERE guild_id = ?1;",
+                (guild_value,),
+            )
+            .await
+            .context("failed to query self-role menu")?;
+        let Some(row) = rows
+            .next()
+            .await
+            .context("failed to retrieve self-role menu")?
+        else {
+            return Ok(None);
+        };
+        let Value::Integer(channel_id) = row.get_value(0)? else {
+            bail!("unexpected self-role channel ID value");
+        };
+        let message_id = match row.get_value(1)? {
+            Value::Integer(value) => Some(serenity::MessageId::new(
+                u64::try_from(value).context("self-role message ID is negative")?,
+            )),
+            Value::Null => None,
+            value => bail!("unexpected self-role message ID value: {value:?}"),
+        };
+        let Value::Text(title) = row.get_value(2)? else {
+            bail!("unexpected self-role title value");
+        };
+        let mut option_rows = conn
+            .query(
+                "SELECT role_id, label, emoji, description FROM guild_self_role_option
+                 WHERE guild_id = ?1 ORDER BY display_order, role_id;",
+                (guild_value,),
+            )
+            .await
+            .context("failed to query self-role options")?;
+        let mut options = Vec::new();
+        while let Some(row) = option_rows
+            .next()
+            .await
+            .context("failed to retrieve self-role option")?
+        {
+            let Value::Integer(role_id) = row.get_value(0)? else {
+                bail!("unexpected self-role option role ID value");
+            };
+            let Value::Text(label) = row.get_value(1)? else {
+                bail!("unexpected self-role option label value");
+            };
+            let Value::Text(emoji) = row.get_value(2)? else {
+                bail!("unexpected self-role option emoji value");
+            };
+            let Value::Text(description) = row.get_value(3)? else {
+                bail!("unexpected self-role option description value");
+            };
+            options.push(SelfRoleOption {
+                role_id: serenity::RoleId::new(
+                    u64::try_from(role_id).context("self-role option role ID is negative")?,
+                ),
+                label,
+                emoji,
+                description,
+            });
+        }
+        Ok(Some(SelfRoleMenu {
+            guild_id,
+            channel_id: serenity::ChannelId::new(
+                u64::try_from(channel_id).context("self-role channel ID is negative")?,
+            ),
+            message_id,
+            title,
+            options,
+        }))
+    }
+
+    pub async fn clear_self_role_menu(&self, guild_id: serenity::GuildId) -> Result<()> {
+        let mut conn = self.conn.lock().await;
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
+        let tx = conn
+            .transaction()
+            .await
+            .context("failed to begin self-role menu removal transaction")?;
+        let guild_id = snowflake_to_integer(guild_id.get())?;
+        tx.execute(
+            "DELETE FROM guild_self_role_option WHERE guild_id = ?1;",
+            (guild_id,),
+        )
+        .await
+        .context("failed to remove self-role options")?;
+        tx.execute(
+            "DELETE FROM guild_self_role_menu WHERE guild_id = ?1;",
+            (guild_id,),
+        )
+        .await
+        .context("failed to remove self-role menu")?;
+        tx.commit()
+            .await
+            .context("failed to commit self-role menu removal")?;
+        Ok(())
+    }
+
     pub async fn run_daily_snapshots(&self) -> Result<()> {
         self.run_snapshots_every(DAILY_SNAPSHOT_INTERVAL).await
     }
@@ -462,6 +674,8 @@ async fn apply_migrations(conn: &mut Connection, applied: i64) -> Result<bool> {
         (1, MIGRATION_1, "0001_counter"),
         (2, MIGRATION_2, "0002_admin_log_channel"),
         (3, MIGRATION_3, "0003_patch_notes_channel"),
+        (4, MIGRATION_4, "0004_self_role_menus"),
+        (5, MIGRATION_5, "0005_self_role_options"),
     ] {
         if applied >= version {
             continue;
@@ -685,6 +899,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stores_an_exclusive_self_role_menu_with_configurable_options() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let data = InstanceData::open(&directory.path().join("sillybot.db"), false).await?;
+        let guild = serenity::GuildId::new(42);
+
+        data.create_self_role_menu(
+            guild,
+            serenity::ChannelId::new(100),
+            "Choose your creature role",
+        )
+        .await?;
+        data.add_self_role_option(
+            guild,
+            serenity::RoleId::new(200),
+            "Fairy",
+            "🧚",
+            "Quiet and shy, but bubbly once comfortable.",
+        )
+        .await?;
+        data.add_self_role_option(
+            guild,
+            serenity::RoleId::new(201),
+            "Frog",
+            "🐸",
+            "Just froggin.",
+        )
+        .await?;
+        data.set_self_role_message(guild, serenity::MessageId::new(300))
+            .await?;
+
+        assert_eq!(
+            data.self_role_menu(guild).await?,
+            Some(SelfRoleMenu {
+                guild_id: guild,
+                channel_id: serenity::ChannelId::new(100),
+                message_id: Some(serenity::MessageId::new(300)),
+                title: "Choose your creature role".to_owned(),
+                options: vec![
+                    SelfRoleOption {
+                        role_id: serenity::RoleId::new(200),
+                        label: "Fairy".to_owned(),
+                        emoji: "🧚".to_owned(),
+                        description: "Quiet and shy, but bubbly once comfortable.".to_owned(),
+                    },
+                    SelfRoleOption {
+                        role_id: serenity::RoleId::new(201),
+                        label: "Frog".to_owned(),
+                        emoji: "🐸".to_owned(),
+                        description: "Just froggin.".to_owned(),
+                    },
+                ],
+            })
+        );
+
+        data.remove_self_role_option(guild, serenity::RoleId::new(200))
+            .await?;
+        assert_eq!(data.self_role_menu(guild).await?.unwrap().options.len(), 1);
+        data.clear_self_role_menu(guild).await?;
+        assert_eq!(data.self_role_menu(guild).await?, None);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn creates_one_post_migration_snapshot_for_fresh_protected_data() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("sillybot.db");
@@ -692,7 +969,7 @@ mod tests {
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("post-migration-3"));
+        assert!(names[0].contains("post-migration-5"));
         Ok(())
     }
 
@@ -705,7 +982,7 @@ mod tests {
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("baseline-3"));
+        assert!(names[0].contains("baseline-5"));
         Ok(())
     }
 
@@ -773,13 +1050,13 @@ mod tests {
         InstanceData::open(&path, false).await?;
         let markers = directory.path().join(".snapshot-events");
         std::fs::create_dir_all(&markers)?;
-        std::fs::write(markers.join("post-migration-3.pending"), b"pending")?;
+        std::fs::write(markers.join("post-migration-5.pending"), b"pending")?;
 
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("post-migration-3"));
-        assert!(!markers.join("post-migration-3.pending").exists());
+        assert!(names[0].contains("post-migration-5"));
+        assert!(!markers.join("post-migration-5.pending").exists());
         Ok(())
     }
 
@@ -795,9 +1072,9 @@ mod tests {
         assert!(
             names
                 .iter()
-                .any(|name| name.contains("pre-migration-1-to-3"))
+                .any(|name| name.contains("pre-migration-1-to-5"))
         );
-        assert!(names.iter().any(|name| name.contains("post-migration-3")));
+        assert!(names.iter().any(|name| name.contains("post-migration-5")));
         Ok(())
     }
 
@@ -823,7 +1100,7 @@ mod tests {
         InstanceData::open(&path, false).await?;
         let database = Builder::new_local(path.to_str().unwrap()).build().await?;
         let conn = database.connect()?;
-        conn.execute("INSERT INTO schema_migrations (version) VALUES (4);", ())
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (6);", ())
             .await?;
         drop(conn);
 

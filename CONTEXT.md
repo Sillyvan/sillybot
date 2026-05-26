@@ -56,6 +56,10 @@ _Avoid_: patch subscription message, Riot API command
 An installed guild's optional configured Discord channel where a Sillybot instance posts links to newly published official League of Legends patch notes.
 _Avoid_: global patch channel, patch archive
 
+**Self-role menu** (`/self-role`):
+An installed guild's optional bot-authored message through which members assign themselves one configured Discord role. A self-role menu is exclusive: choosing an option replaces another role from that menu, and members may remove their choice.
+_Avoid_: reaction-role automation, role poll
+
 ## Flagged Ambiguities
 
 **Instance**:

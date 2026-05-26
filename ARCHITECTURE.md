@@ -2,7 +2,7 @@
 
 Status: implemented baseline with current extensions
 Last researched: 2026-05-25  
-Scope: self-hosted Discord bot with counting, moderation, and League patch-notes publication
+Scope: self-hosted Discord bot with counting, moderation, League patch-notes publication, and self-role menus
 
 ## Goals
 
@@ -11,7 +11,7 @@ Sillybot is a small self-hosted Discord bot written in Rust. Each self-hoster op
 1. Prove that Discord interaction handling works with `/ping`.
 2. Prove that durable database writes survive process and container restarts with `/count`.
 
-The implementation now also supports moderation commands, an installed guild's optional moderation audit channel, and per-guild publication of official League of Legends patch notes. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
+The implementation now also supports moderation commands, an installed guild's optional moderation audit channel, per-guild publication of official League of Legends patch notes, and an installed guild's exclusive self-role menu. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
 
 ## Constraints and Assumptions
 
@@ -101,6 +101,7 @@ Use Discord application commands, beginning with:
 | `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
 | `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
 | `/patch-notes set`, `/patch-notes clear`, `/patch-notes show` | Configure or inspect an installed guild's League of Legends patch notes channel | Read/write Turso transaction |
+| `/self-role create`, `/self-role option-add`, `/self-role option-remove`, `/self-role publish`, `/self-role show`, `/self-role remove` | Configure one bot-authored exclusive self-role menu for an installed guild | Read/write Turso transaction |
 
 Application commands are preferable to prefix commands such as `!ping`:
 
@@ -134,6 +135,7 @@ Start with slash commands and the minimum gateway intents needed by the final Po
 - Do not enable `MESSAGE_CONTENT` for declared application commands.
 - Do not enable `GUILD_MEMBERS` or `GUILD_PRESENCES` until a feature needs them.
 - Add event-specific standard intents only when a feature consumes those gateway events.
+- Receive self-role selections through message component interactions; these use the existing interaction delivery path and need no reaction or member gateway intents.
 
 For an initial Sillybot instance:
 
@@ -148,7 +150,7 @@ For an initial Sillybot instance:
 
 ### Response Timing
 
-Discord requires an initial interaction response within 3 seconds; the interaction token remains usable for follow-up work for 15 minutes. `/ping` and `/count` complete directly within the initial response. `/info` first responds immediately and edits that response with elapsed initial response latency. `/count` uses a normal channel-visible response; its cross-guild aggregate value is intentionally visible wherever that instance is installed. Moderation commands defer immediately before their Discord mutation and respond ephemerally to the moderator.
+Discord requires an initial interaction response within 3 seconds; the interaction token remains usable for follow-up work for 15 minutes. `/ping` and `/count` complete directly within the initial response. `/info` first responds immediately and edits that response with elapsed initial response latency. `/count` uses a normal channel-visible response; its cross-guild aggregate value is intentionally visible wherever that instance is installed. Moderation commands defer immediately before their Discord mutation and respond ephemerally to the moderator. Self-role selections defer ephemerally, add a selected configured role before removing another menu role, and report the result privately.
 
 ## Rust Application Architecture
 
@@ -165,6 +167,7 @@ src/
     info.rs
     synchronization.rs    application-command declaration and pre-gateway synchronization
     patch_notes.rs         channel configuration and Riot patch-notes publication worker
+    self_roles.rs          exclusive configurable self-role menu and selection handling
     admin/                moderation command declarations and one shared implementation
   db/
     mod.rs                InstanceData: migrations, persisted behavior, snapshot generation
@@ -172,6 +175,8 @@ migrations/
   0001_counter.sql
   0002_admin_log_channel.sql
   0003_patch_notes_channel.sql
+  0004_self_role_menus.sql
+  0005_self_role_options.sql
 deploy/
   Containerfile
   compose.yaml
@@ -191,6 +196,8 @@ AppState
 Because this is a low-volume beta database integration, `InstanceData` serializes database operations rather than adding a pool or parallel write paths. A Tokio mutex around the active database connection is acceptable for this workload. Reassess after Turso's concurrency limitations change or an actual feature needs parallel database access.
 
 The patch-notes publication worker polls Riot's public official patch-notes page hourly and reads its embedded structured page data. Its per-guild persisted cursor posts the latest current note on initial enablement without replaying history and advances only after a successful Discord post.
+
+A self-role menu stores one bot-authored published message and up to 24 administrator-configured existing Discord roles per installed guild. Its string select includes an additional removal choice within Discord's 25-option limit. Discord member roles are authoritative for member selections; the database retains menu configuration only. Administrators need `MANAGE_ROLES`, and Sillybot's role must be above every assignable role in Discord's hierarchy.
 
 When scheduled snapshots are enabled, inspect migrations before applying them. For an existing database with pending migrations, create a pre-migration snapshot first; for a fresh database there is no pre-existing state to export. After creating a fresh database or applying migrations, create a post-migration snapshot before Discord command synchronization or gateway service begins. If protection is enabled for an already current database without a protected export for its current schema, create one baseline snapshot. Ordinary restarts with no schema transition and no newly enabled protection create no startup export. Persist successful event-snapshot markers in the protected data directory outside the cleanup-managed exported files so startup retries do not generate duplicate exports for the same baseline or migration boundary. After startup, use a lightweight Tokio background task for daily snapshot creation. All snapshot paths call the snapshotter through the same serialized database boundary as commands. No scheduling crate is needed for the initial daily interval. Scheduled snapshot generation is disabled by default for disposable evaluation instances and must be explicitly enabled as part of an operator's backup workflow.
 

@@ -50,10 +50,20 @@ pub async fn run(token: String, dev_guild_id: Option<u64>, state: AppState) -> R
                 .options(poise::FrameworkOptions {
                     commands: commands::synchronization::declared_commands(),
                     initialize_owners: false,
-                    event_handler: |_, event, _, _| {
+                    event_handler: |serenity_ctx, event, _, data| {
                         Box::pin(async move {
                             if let serenity::FullEvent::Ready { data_about_bot, .. } = event {
                                 info!(user = %data_about_bot.user.name, "Discord gateway ready");
+                            }
+                            if let serenity::FullEvent::InteractionCreate { interaction } = event
+                                && let Some(component) = interaction.as_message_component()
+                            {
+                                commands::self_roles::handle_component(
+                                    serenity_ctx,
+                                    component,
+                                    &data.instance_data,
+                                )
+                                .await?;
                             }
                             Ok(())
                         })

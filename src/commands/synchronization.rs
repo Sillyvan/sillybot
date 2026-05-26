@@ -17,6 +17,7 @@ pub(crate) fn declared_commands() -> Vec<poise::Command<AppState, Error>> {
         super::admin::timeout::timeout(),
         super::admin::log_channel::admin_log(),
         super::patch_notes::patch_notes(),
+        super::self_roles::self_role(),
     ]
 }
 
@@ -178,7 +179,8 @@ mod tests {
                 "kick",
                 "timeout",
                 "admin-log",
-                "patch-notes"
+                "patch-notes",
+                "self-role"
             ]
         );
         assert!(
@@ -206,6 +208,10 @@ mod tests {
             permissions["patch-notes"],
             serenity::Permissions::MANAGE_GUILD
         );
+        assert_eq!(
+            permissions["self-role"],
+            serenity::Permissions::MANAGE_ROLES
+        );
 
         let admin_log = commands
             .iter()
@@ -230,6 +236,25 @@ mod tests {
                 .map(|command| command.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["set", "clear", "show"]
+        );
+        let self_role = commands
+            .iter()
+            .find(|command| command.name == "self-role")
+            .unwrap();
+        assert_eq!(
+            self_role
+                .subcommands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "create",
+                "option-add",
+                "option-remove",
+                "publish",
+                "show",
+                "remove"
+            ]
         );
     }
 
