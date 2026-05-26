@@ -2,6 +2,7 @@ FROM rust:1.95-bookworm AS source
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
 COPY migrations ./migrations
 COPY src ./src
 
