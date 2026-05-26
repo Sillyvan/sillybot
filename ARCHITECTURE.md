@@ -97,7 +97,7 @@ Use Discord application commands, beginning with:
 | --- | --- | --- |
 | `/ping` | Respond with `Pong!` | None |
 | `/count` | Increment and visibly return the Sillybot instance's durable global counter in the invoking channel | Read/write Turso transaction |
-| `/info` | Display the Sillybot version, runtime OS/architecture, process and host-wide CPU/memory usage, and initial interaction response latency without exposing the host name | None |
+| `/info` | Display the Sillybot version, runtime OS/architecture, process and host-wide CPU/memory usage, storage usage for the filesystem containing its database, and initial interaction response latency without exposing the host name or data path | None |
 | `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
 | `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
 | `/patch-notes set`, `/patch-notes clear`, `/patch-notes show` | Configure or inspect an installed guild's League of Legends patch notes channel | Read/write Turso transaction |
@@ -292,6 +292,8 @@ If `/count` later needs per-user or per-guild values, introduce a keyed table an
 ### Migrations
 
 Use checked-in SQL migration files and a minimal application-owned migration runner for the first schema. The runner should execute migrations once at startup before the gateway client starts accepting work and record applied migration numbers.
+
+At build time, discover migration files named `NNNN_description.sql`, reject invalid names, duplicate numbers, or sequence gaps, and embed the ordered SQL catalog in the binary. Runtime migration execution must use that embedded catalog rather than depend on files supplied beside a deployed binary. Treat the recorded migration numbers in an existing database as a contiguous prefix of the embedded catalog; refuse startup when that ledger is inconsistent or newer than the running image.
 
 A third-party migration framework should be introduced only once its Turso Database Rust API support is verified. Selecting a SQLite integration package on name alone is not sufficient because Turso Database is a new implementation, not merely a `rusqlite` connection.
 

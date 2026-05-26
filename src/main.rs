@@ -89,7 +89,10 @@ async fn main() -> Result<()> {
 
     let instance_data =
         InstanceData::open(&config.database_path, config.backup_snapshots_enabled).await?;
-    let state = AppState { instance_data };
+    let state = AppState {
+        instance_data,
+        database_path: config.database_path,
+    };
 
     bot::run(config.discord_token, config.dev_guild_id, state).await
 }

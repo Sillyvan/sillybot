@@ -24,6 +24,20 @@ jobs:
           rust:1.95-bookworm
           sh -c 'rustup component add rustfmt && cargo fmt --check'
 
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Run Clippy with the pinned Rust image
+        run: >-
+          docker run --rm
+          --volume "$PWD:/work"
+          --workdir /work
+          rust:1.95-bookworm
+          sh -c 'rustup component add clippy && cargo clippy --locked --all-targets --all-features -- -D warnings'
+
   turso-platform-tests:
     name: Turso behavior (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}

@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc};
+use std::{future::Future, path::PathBuf, sync::Arc};
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
@@ -12,6 +12,7 @@ pub type Context<'a> = poise::Context<'a, AppState, Error>;
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub instance_data: InstanceData,
+    pub database_path: PathBuf,
 }
 
 fn gateway_intents() -> serenity::GatewayIntents {

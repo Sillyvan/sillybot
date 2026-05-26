@@ -12,12 +12,15 @@ use tokio::{sync::Mutex, time};
 use tracing::{info, warn};
 use turso::{Builder, Connection, Value, transaction::TransactionBehavior};
 
-const MIGRATION_1: &str = include_str!("../../migrations/0001_counter.sql");
-const MIGRATION_2: &str = include_str!("../../migrations/0002_admin_log_channel.sql");
-const MIGRATION_3: &str = include_str!("../../migrations/0003_patch_notes_channel.sql");
-const MIGRATION_4: &str = include_str!("../../migrations/0004_self_role_menus.sql");
-const MIGRATION_5: &str = include_str!("../../migrations/0005_self_role_options.sql");
-const LATEST_SCHEMA_VERSION: i64 = 5;
+#[derive(Clone, Copy, Debug)]
+struct Migration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+
 const DAILY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug)]
@@ -670,14 +673,8 @@ async fn initialize(
 
 async fn apply_migrations(conn: &mut Connection, applied: i64) -> Result<bool> {
     let mut migrated = false;
-    for (version, sql, name) in [
-        (1, MIGRATION_1, "0001_counter"),
-        (2, MIGRATION_2, "0002_admin_log_channel"),
-        (3, MIGRATION_3, "0003_patch_notes_channel"),
-        (4, MIGRATION_4, "0004_self_role_menus"),
-        (5, MIGRATION_5, "0005_self_role_options"),
-    ] {
-        if applied >= version {
+    for migration in MIGRATIONS {
+        if applied >= migration.version {
             continue;
         }
         conn.set_transaction_behavior(TransactionBehavior::Immediate);
@@ -685,19 +682,23 @@ async fn apply_migrations(conn: &mut Connection, applied: i64) -> Result<bool> {
             .transaction()
             .await
             .context("failed to begin database migration transaction")?;
-        tx.execute(sql, ())
+        tx.execute_batch(migration.sql)
             .await
-            .with_context(|| format!("failed to apply migration {name}"))?;
+            .with_context(|| format!("failed to apply migration {}", migration.name))?;
         tx.execute(
             "INSERT INTO schema_migrations (version) VALUES (?1);",
-            (version,),
+            (migration.version,),
         )
         .await
-        .with_context(|| format!("failed to record migration {name}"))?;
+        .with_context(|| format!("failed to record migration {}", migration.name))?;
         tx.commit()
             .await
-            .with_context(|| format!("failed to commit migration {name}"))?;
-        info!(version, "applied database migration");
+            .with_context(|| format!("failed to commit migration {}", migration.name))?;
+        info!(
+            version = migration.version,
+            name = migration.name,
+            "applied database migration"
+        );
         migrated = true;
     }
     if !migrated {
@@ -737,14 +738,37 @@ async fn ensure_counter_row(conn: &Connection) -> Result<()> {
 }
 
 async fn applied_version(conn: &Connection) -> Result<i64> {
-    match single_value(conn, "SELECT MAX(version) FROM schema_migrations;")
+    let mut rows = conn
+        .query(
+            "SELECT version FROM schema_migrations ORDER BY version ASC;",
+            (),
+        )
         .await
-        .context("failed to read migration state")?
+        .context("failed to read migration state")?;
+    let mut applied = 0;
+
+    while let Some(row) = rows
+        .next()
+        .await
+        .context("failed to retrieve migration state")?
     {
-        Value::Integer(version) => Ok(version),
-        Value::Null => Ok(0),
-        value => bail!("unexpected migration version value: {value:?}"),
+        let version = match row
+            .get_value(0)
+            .context("failed to decode migration version")?
+        {
+            Value::Integer(version) => version,
+            value => bail!("unexpected migration version value: {value:?}"),
+        };
+        let expected = applied + 1;
+        if version != expected {
+            bail!(
+                "invalid migration history: expected version {expected}, found version {version}"
+            );
+        }
+        applied = version;
     }
+
+    Ok(applied)
 }
 
 async fn single_integer(conn: &Connection, sql: &str) -> Result<i64> {
@@ -802,7 +826,7 @@ mod tests {
             (),
         )
         .await?;
-        conn.execute(MIGRATION_1, ()).await?;
+        conn.execute(MIGRATIONS[0].sql, ()).await?;
         conn.execute("INSERT INTO schema_migrations (version) VALUES (1);", ())
             .await?;
         conn.execute("INSERT INTO command_counter (value) VALUES (7);", ())
@@ -969,7 +993,7 @@ mod tests {
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("post-migration-5"));
+        assert!(names[0].contains(&format!("post-migration-{LATEST_SCHEMA_VERSION}")));
         Ok(())
     }
 
@@ -982,7 +1006,7 @@ mod tests {
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("baseline-5"));
+        assert!(names[0].contains(&format!("baseline-{LATEST_SCHEMA_VERSION}")));
         Ok(())
     }
 
@@ -1050,13 +1074,14 @@ mod tests {
         InstanceData::open(&path, false).await?;
         let markers = directory.path().join(".snapshot-events");
         std::fs::create_dir_all(&markers)?;
-        std::fs::write(markers.join("post-migration-5.pending"), b"pending")?;
+        let marker_name = format!("post-migration-{LATEST_SCHEMA_VERSION}.pending");
+        std::fs::write(markers.join(&marker_name), b"pending")?;
 
         InstanceData::open(&path, true).await?;
         let names = snapshot_names(directory.path())?;
         assert_eq!(names.len(), 1);
-        assert!(names[0].contains("post-migration-5"));
-        assert!(!markers.join("post-migration-5.pending").exists());
+        assert!(names[0].contains(&format!("post-migration-{LATEST_SCHEMA_VERSION}")));
+        assert!(!markers.join(marker_name).exists());
         Ok(())
     }
 
@@ -1072,9 +1097,13 @@ mod tests {
         assert!(
             names
                 .iter()
-                .any(|name| name.contains("pre-migration-1-to-5"))
+                .any(|name| name.contains(&format!("pre-migration-1-to-{LATEST_SCHEMA_VERSION}")))
         );
-        assert!(names.iter().any(|name| name.contains("post-migration-5")));
+        assert!(
+            names
+                .iter()
+                .any(|name| name.contains(&format!("post-migration-{LATEST_SCHEMA_VERSION}")))
+        );
         Ok(())
     }
 
@@ -1100,12 +1129,31 @@ mod tests {
         InstanceData::open(&path, false).await?;
         let database = Builder::new_local(path.to_str().unwrap()).build().await?;
         let conn = database.connect()?;
-        conn.execute("INSERT INTO schema_migrations (version) VALUES (6);", ())
-            .await?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?1);",
+            (LATEST_SCHEMA_VERSION + 1,),
+        )
+        .await?;
         drop(conn);
 
         let error = InstanceData::open(&path, false).await.unwrap_err();
         assert!(error.to_string().contains("newer than supported"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_a_database_with_a_gapped_migration_history() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("sillybot.db");
+        InstanceData::open(&path, false).await?;
+        let database = Builder::new_local(path.to_str().unwrap()).build().await?;
+        let conn = database.connect()?;
+        conn.execute("DELETE FROM schema_migrations WHERE version = 4;", ())
+            .await?;
+        drop(conn);
+
+        let error = InstanceData::open(&path, false).await.unwrap_err();
+        assert!(error.to_string().contains("migration history"));
         Ok(())
     }
 }

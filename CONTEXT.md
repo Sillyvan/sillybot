@@ -33,7 +33,7 @@ An application command that increments its Sillybot instance's global counter an
 _Avoid_: guild count, user count
 
 **Info command** (`/info`):
-An application command that displays a Sillybot instance's software version, runtime platform, process CPU and memory usage, host-wide CPU and memory usage, and interaction response latency. It does not disclose the host's name.
+An application command that displays a Sillybot instance's software version, runtime platform, process CPU and memory usage, host-wide CPU and memory usage, storage usage for the filesystem containing its database, and interaction response latency. It does not disclose the host's name or data path.
 _Avoid_: host inspection command
 
 **Global counter**:
