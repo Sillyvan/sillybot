@@ -57,7 +57,7 @@ An installed guild's optional configured Discord channel where a Sillybot instan
 _Avoid_: global patch channel, patch archive
 
 **Self-role menu** (`/self-role`):
-An installed guild's optional bot-authored message through which members assign themselves one configured Discord role. A self-role menu is exclusive: choosing an option replaces another role from that menu, and members may remove their choice.
+An installed guild's optional bot-authored message through which members assign themselves any configured Discord roles. A self-role menu selection is the member's desired set for that menu, and members may remove all selected menu roles.
 _Avoid_: reaction-role automation, role poll
 
 ## Flagged Ambiguities

@@ -11,7 +11,7 @@ const SELECT_CUSTOM_ID: &str = "self-role:select";
 const CLEAR_VALUE: &str = "clear";
 const MAX_CONFIGURED_OPTIONS: usize = 24;
 
-/// Configure this guild's exclusive self-role menu.
+/// Configure this guild's self-role menu.
 #[poise::command(
     slash_command,
     guild_only,
@@ -222,7 +222,7 @@ fn validate_option_text(label: &str, description: &str) -> Result<(), Error> {
 fn create_menu_message(menu: &SelfRoleMenu) -> serenity::CreateMessage {
     serenity::CreateMessage::new()
         .content(format!(
-            "**{}**\nChoose one role. Selecting a new role replaces your existing choice.",
+            "**{}**\nChoose any roles you want. Submit every role from this menu that you want to keep.",
             menu.title
         ))
         .components(menu_components(menu))
@@ -231,7 +231,7 @@ fn create_menu_message(menu: &SelfRoleMenu) -> serenity::CreateMessage {
 fn edit_menu_message(menu: &SelfRoleMenu) -> serenity::EditMessage {
     serenity::EditMessage::new()
         .content(format!(
-            "**{}**\nChoose one role. Selecting a new role replaces your existing choice.",
+            "**{}**\nChoose any roles you want. Submit every role from this menu that you want to keep.",
             menu.title
         ))
         .components(menu_components(menu))
@@ -248,8 +248,8 @@ fn menu_components(menu: &SelfRoleMenu) -> Vec<serenity::CreateActionRow> {
         })
         .collect::<Vec<_>>();
     options.push(
-        serenity::CreateSelectMenuOption::new("Remove my role", CLEAR_VALUE)
-            .description("Remove your selected role from this menu")
+        serenity::CreateSelectMenuOption::new("Remove my roles", CLEAR_VALUE)
+            .description("Remove your selected roles from this menu")
             .emoji(serenity::ReactionType::Unicode("🚫".to_owned())),
     );
     vec![serenity::CreateActionRow::SelectMenu(
@@ -257,9 +257,9 @@ fn menu_components(menu: &SelfRoleMenu) -> Vec<serenity::CreateActionRow> {
             SELECT_CUSTOM_ID,
             serenity::CreateSelectMenuKind::String { options },
         )
-        .placeholder("Choose your role...")
+        .placeholder("Choose your roles...")
         .min_values(1)
-        .max_values(1),
+        .max_values(menu.options.len().max(1) as u8),
     )]
 }
 
@@ -301,23 +301,37 @@ pub(crate) async fn show_message(
     })
 }
 
-fn selected_option<'a>(menu: &'a SelfRoleMenu, value: &str) -> Option<&'a SelfRoleOption> {
-    menu.options
+fn selected_options<'a>(
+    menu: &'a SelfRoleMenu,
+    values: &[String],
+) -> Result<Vec<&'a SelfRoleOption>, Error> {
+    values
         .iter()
-        .find(|option| option.role_id.to_string() == value)
+        .map(|value| {
+            menu.options
+                .iter()
+                .find(|option| option.role_id.to_string() == *value)
+                .context("The selected self-role option no longer exists.")
+                .map_err(Into::into)
+        })
+        .collect()
 }
 
 fn role_changes(
     menu: &SelfRoleMenu,
     current_roles: &[serenity::RoleId],
-    selected: Option<serenity::RoleId>,
-) -> (Option<serenity::RoleId>, Vec<serenity::RoleId>) {
-    let to_add = selected.filter(|role_id| !current_roles.contains(role_id));
+    selected: &[serenity::RoleId],
+) -> (Vec<serenity::RoleId>, Vec<serenity::RoleId>) {
+    let to_add = selected
+        .iter()
+        .copied()
+        .filter(|role_id| !current_roles.contains(role_id))
+        .collect();
     let to_remove = menu
         .options
         .iter()
         .map(|option| option.role_id)
-        .filter(|role_id| current_roles.contains(role_id) && Some(*role_id) != selected)
+        .filter(|role_id| current_roles.contains(role_id) && !selected.contains(role_id))
         .collect();
     (to_add, to_remove)
 }
@@ -343,16 +357,13 @@ pub(crate) async fn handle_component(
     else {
         return Ok(());
     };
-    let value = values
-        .first()
-        .context("self-role menu selection is empty")?;
-    let selected = if value == CLEAR_VALUE {
-        None
+    if values.is_empty() {
+        return Err(anyhow::anyhow!("self-role menu selection is empty").into());
+    }
+    let selected = if values.iter().any(|value| value == CLEAR_VALUE) {
+        Vec::new()
     } else {
-        Some(
-            selected_option(&menu, value)
-                .context("The selected self-role option no longer exists.")?,
-        )
+        selected_options(&menu, values)?
     };
     let member = interaction
         .member
@@ -367,11 +378,17 @@ pub(crate) async fn handle_component(
             ),
         )
         .await?;
-    let (to_add, to_remove) =
-        role_changes(&menu, &member.roles, selected.map(|option| option.role_id));
-    if let Some(option) = selected {
+    let selected_role_ids = selected
+        .iter()
+        .map(|option| option.role_id)
+        .collect::<Vec<_>>();
+    let (to_add, to_remove) = role_changes(&menu, &member.roles, &selected_role_ids);
+    if !selected.is_empty() {
         let roles = guild_id.roles(&ctx.http).await?;
-        if !roles.contains_key(&option.role_id) {
+        if selected
+            .iter()
+            .any(|option| !roles.contains_key(&option.role_id))
+        {
             interaction
                 .edit_response(
                     ctx,
@@ -382,17 +399,22 @@ pub(crate) async fn handle_component(
                 .await?;
             return Ok(());
         }
-        if let Some(role_id) = to_add {
+        for role_id in to_add {
             member.add_role(&ctx.http, role_id).await?;
         }
     }
     for role_id in to_remove {
         member.remove_role(&ctx.http, role_id).await?;
     }
-    let response = if let Some(option) = selected {
-        format!("You are now {} {}.", option.emoji, option.label)
+    let response = if selected.is_empty() {
+        "Your self-roles have been removed.".to_owned()
     } else {
-        "Your self-role has been removed.".to_owned()
+        let selected_labels = selected
+            .iter()
+            .map(|option| format!("{} {}", option.emoji, option.label))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("Your self-roles are now {selected_labels}.")
     };
     interaction
         .edit_response(
@@ -445,14 +467,18 @@ mod tests {
             }],
         };
         assert_eq!(
-            selected_option(&menu, "200").map(|option| option.label.as_str()),
-            Some("Frog")
+            selected_options(&menu, &["200".to_owned()])
+                .unwrap()
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Frog"]
         );
-        assert!(selected_option(&menu, "999").is_none());
+        assert!(selected_options(&menu, &["999".to_owned()]).is_err());
     }
 
     #[test]
-    fn selecting_one_menu_role_replaces_other_menu_roles_and_clear_removes_them() {
+    fn selected_menu_roles_are_applied_as_the_member_desired_set() {
         let menu = SelfRoleMenu {
             guild_id: serenity::GuildId::new(42),
             channel_id: serenity::ChannelId::new(100),
@@ -478,16 +504,19 @@ mod tests {
             role_changes(
                 &menu,
                 &[serenity::RoleId::new(200), unrelated],
-                Some(serenity::RoleId::new(201))
+                &[serenity::RoleId::new(200), serenity::RoleId::new(201)]
             ),
             (
-                Some(serenity::RoleId::new(201)),
-                vec![serenity::RoleId::new(200)]
+                vec![serenity::RoleId::new(201)],
+                Vec::<serenity::RoleId>::new()
             )
         );
         assert_eq!(
-            role_changes(&menu, &[serenity::RoleId::new(201), unrelated], None),
-            (None, vec![serenity::RoleId::new(201)])
+            role_changes(&menu, &[serenity::RoleId::new(201), unrelated], &[]),
+            (
+                Vec::<serenity::RoleId>::new(),
+                vec![serenity::RoleId::new(201)]
+            )
         );
     }
 

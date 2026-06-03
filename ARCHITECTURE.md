@@ -11,7 +11,7 @@ Sillybot is a small self-hosted Discord bot written in Rust. Each self-hoster op
 1. Prove that Discord interaction handling works with `/ping`.
 2. Prove that durable database writes survive process and container restarts with `/count`.
 
-The implementation now also supports moderation commands, an installed guild's optional moderation audit channel, per-guild publication of official League of Legends patch notes, and an installed guild's exclusive self-role menu. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
+The implementation now also supports moderation commands, an installed guild's optional moderation audit channel, per-guild publication of official League of Legends patch notes, and an installed guild's self-role menu. The design should remain small, observable, easy to deploy on one host, and easy to extend without selecting infrastructure for hypothetical scale.
 
 ## Constraints and Assumptions
 
@@ -101,7 +101,7 @@ Use Discord application commands, beginning with:
 | `/ban`, `/kick`, `/timeout` | Apply a Discord moderation action for an authorized member of an installed guild, then optionally record it in that guild's moderation audit channel | Read configured audit channel |
 | `/admin-log set`, `/admin-log clear`, `/admin-log show` | Configure or inspect an installed guild's moderation audit channel | Read/write Turso transaction |
 | `/patch-notes set`, `/patch-notes clear`, `/patch-notes show` | Configure or inspect an installed guild's League of Legends patch notes channel | Read/write Turso transaction |
-| `/self-role create`, `/self-role option-add`, `/self-role option-remove`, `/self-role publish`, `/self-role show`, `/self-role remove` | Configure one bot-authored exclusive self-role menu for an installed guild | Read/write Turso transaction |
+| `/self-role create`, `/self-role option-add`, `/self-role option-remove`, `/self-role publish`, `/self-role show`, `/self-role remove` | Configure one bot-authored self-role menu for an installed guild | Read/write Turso transaction |
 
 Application commands are preferable to prefix commands such as `!ping`:
 
@@ -167,7 +167,7 @@ src/
     info.rs
     synchronization.rs    application-command declaration and pre-gateway synchronization
     patch_notes.rs         channel configuration and Riot patch-notes publication worker
-    self_roles.rs          exclusive configurable self-role menu and selection handling
+    self_roles.rs          configurable self-role menu and selection handling
     admin/                moderation command declarations and one shared implementation
   db/
     mod.rs                InstanceData: migrations, persisted behavior, snapshot generation

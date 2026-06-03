@@ -923,7 +923,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stores_an_exclusive_self_role_menu_with_configurable_options() -> Result<()> {
+    async fn stores_a_self_role_menu_with_configurable_options() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let data = InstanceData::open(&directory.path().join("sillybot.db"), false).await?;
         let guild = serenity::GuildId::new(42);
